@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eda_tool"
+version = "0.2.0"
+description = "Batch EDA workflows, Orchid visualizations and an extensible workbench CLI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "matplotlib>=3.9",
+  "wordcloud>=1.9",
+  "pyarrow>=14"
+]
+
+[project.scripts]
+workbench = "eda_tool.cli:main"
+eda = "eda_tool.cli:legacy_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
