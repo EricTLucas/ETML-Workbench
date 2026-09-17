@@ -6,3 +6,6 @@ __all__ = [
     'Dataset', 'DatasetWorkspace', 'VersionDraft', 'DatasetManifest',
     'ProcessedManifest', 'FileRecord', 'load_manifest',
 ]
+
+from .manifest import TaskRunManifest
+__all__ += ['TaskRunManifest']

@@ -202,9 +202,36 @@ def load_manifest(path: Path) -> DatasetManifest | ProcessedManifest:
         payload['files'] = tuple(FileRecord(**item) for item in payload['files'])
         if payload.get('kind') == 'dataset':
             return DatasetManifest(**payload)
+        if payload.get('kind') == 'task_run':
+            return TaskRunManifest(**payload)
         if payload.get('kind') == 'processed':
             payload['recipe'] = FileRecord(**payload['recipe'])
             return ProcessedManifest(**payload)
         raise ValueError('Unknown manifest kind')
     except (KeyError, TypeError, AttributeError) as exc:
         raise ValueError('Malformed manifest') from exc
+
+
+@dataclass(frozen=True)
+class TaskRunManifest:
+    dataset_id: str
+    task_id: str
+    run_id: str
+    created_at: str
+    files: tuple[FileRecord, ...]
+    metadata: dict = field(default_factory=dict)
+    schema: dict = field(default_factory=dict)
+    format_version: int = FORMAT_VERSION
+    kind: str = 'task_run'
+    status: str = 'complete'
+
+    def __post_init__(self):
+        for value in (self.dataset_id, self.task_id, self.run_id):
+            validate_name(value)
+        _validate_common(self, 'task_run')
+        if self.status != 'complete' or not self.files:
+            raise ValueError('Task run must contain completed artifacts')
+        json.dumps(self.metadata, allow_nan=False)
+
+    def save(self, path):
+        return write_json(path, asdict(self))

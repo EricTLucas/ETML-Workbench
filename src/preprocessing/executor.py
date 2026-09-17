@@ -94,6 +94,15 @@ def fit_recipe(source, recipe: Recipe, *, batch_size=50_000, loader_options=None
     dataset, factory = _source(source, batch_size, loader_options)
     names = tuple(dataset.schema())
     validate_recipe(recipe, names, require_approved=require_approved)
+    return fit_batches(factory, names, recipe, batch_size=batch_size,
+                       require_approved=require_approved, fit_label=fit_label)
+
+
+def fit_batches(factory, columns, recipe, *, batch_size=50_000, require_approved=True,
+                fit_label='explicit fitting batches'):
+    recipe = Recipe.from_dict(recipe.to_dict())
+    names = tuple(columns)
+    validate_recipe(recipe, names, require_approved=require_approved)
     fitted = []
     for step in recipe.active_steps:
         transform = build_transform(step)
@@ -199,3 +208,49 @@ def execute_recipe(workspace, dataset_id, recipe: Recipe, *, source_version='raw
         version = draft.version
     return ExecutionResult(dataset_id, version, dataset.directory/'processed'/version,
                            input_rows, output_rows, fitted)
+
+
+class ParquetBatchWriter:
+    def __init__(self, path, schema):
+        import pyarrow.parquet as pq
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.schema = schema.remove_metadata()
+        self.writer = pq.ParquetWriter(self.path, self.schema)
+        self.rows = 0
+
+    def write(self, frame):
+        import pyarrow as pa
+        table = pa.Table.from_pandas(frame, schema=self.schema, preserve_index=False, safe=True)
+        self.writer.write_table(table)
+        self.rows += len(frame)
+
+    def close(self):
+        self.writer.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+def write_parquet_batches(factory, path):
+    import pyarrow as pa
+    schema = None
+    expected = 0
+    with batches(factory) as iterator:
+        for frame in iterator:
+            check_frame(frame)
+            current = pa.Table.from_pandas(frame, preserve_index=False).schema.remove_metadata()
+            schema = current if schema is None else pa.unify_schemas([schema, current], promote_options='permissive')
+            expected += len(frame)
+    if schema is None:
+        raise ValueError('Batch factory must expose a schema, including for empty datasets')
+    with ParquetBatchWriter(path, schema) as writer:
+        with batches(factory) as iterator:
+            for frame in iterator:
+                writer.write(frame)
+        if writer.rows != expected:
+            raise ValueError('Batch factory changed across passes')
+    return {'rows': expected, 'schema': {f.name: str(f.type) for f in schema}}

@@ -265,3 +265,75 @@ class DatasetWorkspace:
                 if target.exists():
                     raise FileExistsError(target)
                 _publish_directory(staging, target)
+
+
+    def create_task(self, dataset_id, config):
+        from tasks import TaskConfig
+        if not isinstance(config, TaskConfig):
+            raise TypeError('Expected TaskConfig')
+        with self._lock(dataset_id):
+            dataset = self.get(dataset_id)
+            tasks_root = resolve_inside(dataset.directory, 'tasks')
+            tasks_root.mkdir(exist_ok=True)
+            target = resolve_inside(tasks_root, config.task_id)
+            if target.exists():
+                existing = self.get_task(dataset_id, config.task_id)
+                if existing != config:
+                    raise ValueError('Task ID already has different settings; choose a new task ID')
+                return target
+            with TemporaryDirectory(prefix='.task-', dir=tasks_root) as temp:
+                staging = Path(temp)
+                write_json(staging/'task.json', config.to_dict())
+                (staging/'runs').mkdir()
+                _publish_directory(staging, target)
+        return target
+
+    def get_task(self, dataset_id, task_id):
+        import json
+        from tasks import TaskConfig
+        dataset = self.get(dataset_id)
+        path = resolve_inside(dataset.directory, 'tasks/'+validate_name(task_id)+'/task.json')
+        config = TaskConfig.from_dict(json.loads(path.read_text(encoding='utf-8')))
+        if config.task_id != task_id:
+            raise ValueError('Task configuration does not match its directory')
+        return config
+
+    def get_task_run(self, dataset_id, task_id, run_id, *, verify=False):
+        from .manifest import TaskRunManifest
+        dataset = self.get(dataset_id)
+        root = resolve_inside(dataset.directory, f'tasks/{validate_name(task_id)}/runs/{validate_name(run_id)}')
+        manifest = load_manifest(resolve_inside(root, 'manifest.json'))
+        if not isinstance(manifest, TaskRunManifest) or (manifest.dataset_id,manifest.task_id,manifest.run_id) != (dataset_id,task_id,run_id):
+            raise ValueError('Task run identity mismatch')
+        for record in manifest.files:
+            resolve_inside(root, record.path)
+            if verify:
+                record.verify(root)
+        return manifest
+
+    @contextmanager
+    def task_run(self, dataset_id, task_id):
+        from .manifest import TaskRunManifest
+        with self._lock(dataset_id):
+            config = self.get_task(dataset_id, task_id)
+            dataset = self.get(dataset_id)
+            root = resolve_inside(dataset.directory, f'tasks/{task_id}/runs')
+            run_id = 'run-'+uuid.uuid4().hex
+            with TemporaryDirectory(prefix='.run-', dir=root) as temp:
+                staging = Path(temp)
+                draft = TaskRunDraft(run_id, staging, {})
+                write_json(staging/'task.json', config.to_dict())
+                yield draft
+                files = tuple(FileRecord.from_file(staging, path) for path in sorted(staging.rglob('*'))
+                              if path.is_file())
+                manifest = TaskRunManifest(dataset_id, task_id, run_id, utc_now(), files, draft.metadata)
+                manifest.save(staging/'manifest.json')
+                _publish_directory(staging, root/run_id)
+
+
+@dataclass
+class TaskRunDraft:
+    run_id: str
+    directory: Path
+    metadata: dict
+
