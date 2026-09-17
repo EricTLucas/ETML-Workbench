@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eda_tool"
-version = "0.2.0"
-description = "Batch EDA workflows, Orchid visualizations and an extensible workbench CLI"
+version = "0.3.0"
+description = "ETML Workbench: batch EDA, dataset storage and reviewed preprocessing"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -17,11 +17,12 @@ dependencies = [
 ]
 
 [project.scripts]
-workbench = "eda_tool.cli:main"
+workbench = "etml.cli:main"
 eda = "eda_tool.cli:legacy_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["etml*", "eda_tool*", "data", "data.*", "preprocessing", "preprocessing.*", "workflows", "workflows.*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
