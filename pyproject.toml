@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eda_tool"
-version = "0.4.0"
+version = "0.5.0"
 description = "ETML Workbench: batch EDA, dataset storage and reviewed preprocessing"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,8 +13,14 @@ dependencies = [
   "pandas>=2.0",
   "matplotlib>=3.9",
   "wordcloud>=1.9",
-  "pyarrow>=14"
+  "pyarrow>=14",
+  "scikit-learn>=1.4",
+  "skops>=0.10"
 ]
+
+[project.optional-dependencies]
+xgboost = ["xgboost>=2.0"]
+onnx = ["skl2onnx>=1.17", "onnxruntime>=1.18"]
 
 [project.scripts]
 workbench = "etml.cli:main"
@@ -22,7 +28,7 @@ eda = "eda_tool.cli:legacy_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["etml*", "eda_tool*", "data", "data.*", "preprocessing", "preprocessing.*", "workflows", "workflows.*", "tasks", "tasks.*", "splitting", "splitting.*"]
+include = ["etml*", "eda_tool*", "data", "data.*", "preprocessing", "preprocessing.*", "workflows", "workflows.*", "tasks", "tasks.*", "splitting", "splitting.*", "models", "models.*", "training", "training.*", "prediction", "prediction.*", "exporting", "exporting.*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -28,6 +28,7 @@ def parser():
     root = argparse.ArgumentParser(prog='workbench', description='ETML Workbench: EDA and reviewed preprocessing')
     root.add_argument('--version', action='version', version=f'ETML Workbench {__version__}')
     groups = root.add_subparsers(dest='group', required=True)
+    groups.add_parser('models', help='Training, prediction and model export', add_help=False)
     groups.add_parser('tasks', help='Prediction tasks and train/validation/test preparation', add_help=False)
     groups.add_parser('eda', help='Existing EDA analyze, plot, charts and report commands', add_help=False)
     data = groups.add_parser('datasets', help='Import and inspect preserved datasets')
@@ -230,6 +231,9 @@ def _dispatch(args):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
+        if argv and argv[0] == 'models':
+            from .model_cli import main as model_main
+            return model_main(argv[1:])
         if argv and argv[0] == 'tasks':
             from .task_cli import main as task_main
             return task_main(argv[1:])
