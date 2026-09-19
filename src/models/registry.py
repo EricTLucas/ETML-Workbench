@@ -8,6 +8,8 @@ class ModelSpec:
     probabilities: bool = True
     incremental: bool = False
     onnx: bool = False
+    epochs: bool = False
+    resumable: bool = False
 
 
 def _sklearn(config, task_type):
@@ -25,6 +27,20 @@ _REGISTRY = {('sklearn', name): ModelSpec(_sklearn, onnx=name != 'dummy')
 _REGISTRY['xgboost', 'boosted_trees'] = ModelSpec(_xgboost)
 
 
+def _torch(config, task_type):
+    from .adapters.pytorch import TorchAdapter
+    return TorchAdapter(config,task_type)
+
+
+def _tensorflow(config, task_type):
+    from .adapters.tensorflow import TensorFlowAdapter
+    return TensorFlowAdapter(config,task_type)
+
+
+_REGISTRY['pytorch','mlp'] = ModelSpec(_torch,epochs=True,resumable=True)
+_REGISTRY['tensorflow','mlp'] = ModelSpec(_tensorflow,epochs=True,resumable=True)
+
+
 def register_model(backend, algorithm, spec):
     if (backend, algorithm) in _REGISTRY or not isinstance(spec, ModelSpec) or not callable(spec.factory):
         raise ValueError('Duplicate model or invalid adapter specification')
@@ -33,7 +49,8 @@ def register_model(backend, algorithm, spec):
 
 def available_models():
     return {f'{backend}:{algorithm}': {'tasks':list(spec.task_types), 'probabilities':spec.probabilities,
-                                     'incremental':spec.incremental, 'onnx_model_only':spec.onnx}
+                                     'incremental':spec.incremental, 'onnx_model_only':spec.onnx,
+                                     'epochs':spec.epochs,'resumable':spec.resumable}
             for (backend, algorithm), spec in _REGISTRY.items()}
 
 

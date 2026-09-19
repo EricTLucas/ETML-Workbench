@@ -9,12 +9,13 @@ import pyarrow.parquet as pq
 from data import DatasetWorkspace
 from data.manifest import resolve_inside, write_json, sha256_file
 from models import ModelConfig, create_model
-from models.adapters.sklearn import dump_safe
+from models.adapters.sklearn import dump_safe, load_safe
 from preprocessing import FittedRecipe
 from splitting.strategies import scalar_key
 from .artifacts import environment, seal, staged_directory, verify_artifacts
 from .features import infer_schema, fit_encoder, encode
 from .evaluation import evaluate_predictions, validate_metric
+from .checkpoints import checkpoint_writer, load_checkpoint
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,8 @@ def _write_bundle(directory, adapter, encoder, fitted, config, task_type, classe
     write_json(directory/'labels.json',{'classes':classes,'probability_columns':{f'probability_{i}':v for i,v in enumerate(classes)}})
     write_json(directory/'metrics.json',metrics)
     write_json(directory/'environment.json',environment())
+    write_json(directory/'history.json',{'history':getattr(adapter,'history',[]),
+                                         'summary':getattr(adapter,'training_summary',{})})
     metadata = {**origin,'model_file':model_path.relative_to(directory).as_posix()}
     original = Predictor(adapter,encoder,fitted,schema,classes,task_type).predict(reference)
     # Verify persisted components before committing the final bundle manifest.
@@ -87,7 +90,8 @@ def _write_bundle(directory, adapter, encoder, fitted, config, task_type, classe
 
 
 def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=None, metric=None,
-                 max_rows=200_000, max_bytes=512*1024**2, max_features=50_000, progress=None):
+                 max_rows=200_000, max_bytes=512*1024**2, max_features=50_000, progress=None,
+                 resume=None, reset_patience=False, experiment=None, label=None):
     for value in (max_rows,max_bytes,max_features):
         if type(value) is not int or value < 1:
             raise ValueError('Training limits must be positive integers')
@@ -100,6 +104,10 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
     dataset = workspace.get(dataset_id)
     preparation = resolve_inside(dataset.directory,f'tasks/{task_id}/runs/{preparation_run}')
     preparation_digest = sha256_file(preparation/'manifest.json')
+    resumed = load_checkpoint(resume) if resume else None
+    if resumed and (resumed['origin']['preparation_manifest_sha256']!=preparation_digest
+                    or resumed['origin']['dataset_id']!=dataset_id or resumed['origin']['task_id']!=task_id):
+        raise ValueError('Checkpoint preparation data or task does not match')
     features = metadata['feature_columns']
     train = _load_frame(preparation/'prepared/train/part-00000.parquet',max_rows,max_bytes)
     validation = _load_frame(preparation/'prepared/validation/part-00000.parquet',max_rows,max_bytes)
@@ -121,7 +129,14 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
     configs = list(configs) if configs is not None else [ModelConfig(algorithm='linear'),ModelConfig(algorithm='random_forest')]
     if not configs or not all(isinstance(c,ModelConfig) for c in configs):
         raise ValueError('Supply ModelConfig candidates')
-    if not any(c.backend=='sklearn' and c.algorithm=='dummy' for c in configs):
+    if resumed:
+        if len(configs)!=1:
+            raise ValueError('Resume exactly one neural candidate')
+        original, requested = ModelConfig(**resumed['config']).to_dict(),configs[0].to_dict()
+        original['params'].pop('epochs',None); requested['params'].pop('epochs',None)
+        if original!=requested or resumed['classes']!=classes:
+            raise ValueError('Checkpoint configuration/labels changed; only total epochs may change')
+    if not resumed and not any(c.backend=='sklearn' and c.algorithm=='dummy' for c in configs):
         configs.insert(0,ModelConfig(algorithm='dummy'))
     run_id = 'train-'+uuid.uuid4().hex
     destination = resolve_inside(dataset.directory,f'tasks/{task_id}/training/{run_id}')
@@ -136,17 +151,15 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
             # Configuration, training, or export failures abort atomically; never silently omit a requested model.
             adapter = create_model(config,task_type)
             schema = infer_schema(train[features],config.categorical_columns)
-            scale = config.scale_numeric if config.scale_numeric is not None else config.algorithm=='linear'
-            encoder = fit_encoder(train[features],schema,scale=scale,max_features=max_features)
+            scale = config.scale_numeric if config.scale_numeric is not None else config.algorithm in {'linear','mlp'}
+            if resumed:
+                schema = resumed['schema']['feature_schema']
+                fitted = FittedRecipe.load(Path(resume)/'preprocessing.json')
+                encoder = load_safe(Path(resume)/'encoder.skops')
+            else:
+                encoder = fit_encoder(train[features],schema,scale=scale,max_features=max_features)
             x_train = encode(encoder,train[features],schema,max_bytes)
             x_val = encode(encoder,validation[features],schema,max_bytes)
-            adapter.fit(x_train,y_train)
-            probabilities = adapter.predict_proba(x_val) if task_type=='classification' else None
-            scores = evaluate_predictions(y_val,adapter.predict(x_val),task_type,probabilities=probabilities,n_classes=len(classes))
-            if scores.get(metric) is None:
-                raise ValueError(f'{metric} is undefined on this validation split; choose another metric')
-            record = {'candidate':name,'model':config.to_dict(),'validation':scores}
-            leaderboard.append(record)
             input_schema = {'raw_columns':list(fitted.input_columns),'feature_schema':schema,
                             'encoded_feature_names':encoder.get_feature_names_out().tolist(),
                             'encoded_features':int(x_train.shape[1]),'extra_raw_columns':'ignored',
@@ -155,18 +168,43 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
             origin = {'dataset_id':dataset_id,'task_id':task_id,'preparation_run':preparation_run,
                       'preparation_manifest_sha256':preparation_digest,'training_run':run_id,'candidate':name,
                       'target':target,'task_type':task_type,'selection_split':'validation'}
+            latest_checkpoint = None
+            save_checkpoint = None
+            if config.backend in {'pytorch','tensorflow'}:
+                checkpoint_root = resolve_inside(dataset.directory,f'tasks/{task_id}/checkpoints/{run_id}/{name}')
+                writer = checkpoint_writer(checkpoint_root,{'origin':origin,'config':config.to_dict(),
+                    'schema':input_schema,'classes':classes,'metric':metric},encoder,fitted)
+                def save_checkpoint(model,state):
+                    nonlocal latest_checkpoint
+                    latest_checkpoint = writer(model,state)
+                    return latest_checkpoint
+            def on_progress(event):
+                if progress:
+                    progress({**event,'candidate':name})
+            adapter.fit_validation(x_train,y_train,validation_data=(x_val,y_val),progress=on_progress,
+                checkpoint=save_checkpoint,resume=resume,reset_patience=reset_patience,max_bytes=max_bytes)
+            probabilities = adapter.predict_proba(x_val) if task_type=='classification' else None
+            scores = evaluate_predictions(y_val,adapter.predict(x_val),task_type,probabilities=probabilities,n_classes=len(classes))
+            if scores.get(metric) is None:
+                raise ValueError(f'{metric} is undefined on this validation split; choose another metric')
+            record = {'candidate':name,'model':config.to_dict(),'validation':scores,
+                      'training':getattr(adapter,'training_summary',{}),
+                      'checkpoint':str(latest_checkpoint) if latest_checkpoint else None}
+            leaderboard.append(record)
             _write_bundle(staging/'candidates'/name,adapter,encoder,fitted,config,task_type,classes,input_schema,
                           {'validation':scores},origin,reference,x_train[:64])
             del x_train,x_val,adapter,encoder
         winner = sorted(leaderboard,key=lambda r:(-r['validation'][metric] if direction=='max' else r['validation'][metric],r['candidate']))[0]['candidate']
         write_json(staging/'selection.json',{'winner':winner,'metric':metric,'direction':direction,
-                                            'selection_split':'validation','test_evaluated':False,'leaderboard':leaderboard})
+                                            'selection_split':'validation','test_evaluated':False,'leaderboard':leaderboard,
+                                            'label':label,'experiment':experiment,
+                                            'resumed_from':str(Path(resume).resolve()) if resume else None})
         seal(staging,'training_run',{'dataset_id':dataset_id,'task_id':task_id,'preparation_run':preparation_run,
-                                     'preparation_manifest_sha256':preparation_digest,'winner':winner})
+                                     'preparation_manifest_sha256':preparation_digest,'winner':winner,'label':label})
     return TrainingResult(run_id,destination,winner,destination/'candidates'/winner,metric,leaderboard)
 
 
-def evaluate_test(workspace,dataset_id,task_id,training_run,*,max_rows=200_000,max_bytes=512*1024**2):
+def evaluate_test(workspace,dataset_id,task_id,training_run,*,candidate=None,max_rows=200_000,max_bytes=512*1024**2):
     if any(type(v) is not int or v < 1 for v in (max_rows,max_bytes)):
         raise ValueError('Evaluation limits must be positive integers')
     from prediction import Predictor
@@ -183,7 +221,8 @@ def evaluate_test(workspace,dataset_id,task_id,training_run,*,max_rows=200_000,m
     prep_root = resolve_inside(dataset.directory,f'tasks/{task_id}/runs/{preparation}')
     if sha256_file(prep_root/'manifest.json') != metadata['preparation_manifest_sha256']:
         raise ValueError('Preparation manifest changed since training')
-    predictor = Predictor.load(resolve_inside(root,'candidates/'+metadata['winner']))
+    selected = validate_name(candidate or metadata['winner'])
+    predictor = Predictor.load(resolve_inside(root,'candidates/'+selected))
     frame = _load_frame(prep_root/'prepared/test/part-00000.parquet',max_rows,max_bytes)
     if frame.empty:
         raise ValueError('Test split is empty')
@@ -192,9 +231,9 @@ def evaluate_test(workspace,dataset_id,task_id,training_run,*,max_rows=200_000,m
     y = _encode_target(frame[target],predictor.classes) if predictor.task_type=='classification' else frame[target].to_numpy(dtype=float)
     proba = predictor.adapter.predict_proba(matrix) if predictor.task_type=='classification' else None
     scores = evaluate_predictions(y,predictor.adapter.predict(matrix),predictor.task_type,probabilities=proba,n_classes=len(predictor.classes))
-    report = {'split':'test','candidate':metadata['winner'],'rows':len(frame),'metrics':scores}
+    report = {'split':'test','candidate':selected,'rows':len(frame),'metrics':scores}
     output = root/'evaluations'/('test-'+uuid.uuid4().hex)
     with staged_directory(output) as staging:
         write_json(staging/'metrics.json',report)
-        seal(staging,'evaluation',{'training_run':training_run,'candidate':metadata['winner']})
+        seal(staging,'evaluation',{'training_run':training_run,'candidate':selected})
     return {**report,'directory':str(output)}

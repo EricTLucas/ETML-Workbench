@@ -30,6 +30,11 @@ class Predictor:
             raise ValueError('scikit-learn version differs from the bundle; use its recorded environment')
         settings = read('model_config.json')
         config = ModelConfig(**settings['config'])
+        if config.backend in {'pytorch','tensorflow'}:
+            require_files(manifest,['architecture.json'])
+            package = 'torch' if config.backend=='pytorch' else 'tensorflow'
+            if saved_environment.get(package)!=version(package):
+                raise ValueError(f'{package} version differs from bundle; use its recorded environment')
         adapter = create_model(config,settings['task_type']).load(root)
         fitted = FittedRecipe.from_dict(read('preprocessing.json'))
         schema = read('schema.json')

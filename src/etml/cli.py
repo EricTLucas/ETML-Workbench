@@ -25,7 +25,7 @@ def _profile_options(parser):
 
 
 def parser():
-    root = argparse.ArgumentParser(prog='workbench', description='ETML Workbench: EDA and reviewed preprocessing')
+    root = argparse.ArgumentParser(prog='workbench', description='ETML Workbench: EDA, preprocessing, model experiments and prediction')
     root.add_argument('--version', action='version', version=f'ETML Workbench {__version__}')
     groups = root.add_subparsers(dest='group', required=True)
     groups.add_parser('models', help='Training, prediction and model export', add_help=False)
@@ -105,10 +105,25 @@ def _roles(values):
 
 
 def _emit(payload, args):
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, allow_nan=False))
-    else:
-        print(json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False))
+    from .display import emit, command
+    steps = []
+    common = ['--workspace',args.workspace]
+    if args.group=='datasets' and args.command=='import':
+        steps = [('Inspect data and propose preprocessing',command('workbench','preprocess','prepare',
+                  payload['dataset_id'],*common))]
+    elif args.group=='preprocess' and args.command in {'prepare','review'}:
+        steps = [('Inspect the saved recipe',command('workbench','preprocess','show',payload['dataset_id'],
+                  '--recipe',payload['recipe'],*common))]
+        if args.command=='prepare':
+            steps.append(('After reviewing the suggestions, approve the recipe',command('workbench','preprocess','review',
+                payload['dataset_id'],'--recipe',payload['recipe'],'--approve-all',*common)))
+        else:
+            steps.append(('Define a prediction task (replace YOUR_TARGET and choose classification/regression)',
+                command('workbench','tasks','create',payload['dataset_id'],'prediction','--target','YOUR_TARGET',
+                        '--type','classification',*common)))
+            steps.append(('After creating that task, fit this recipe on the training split',
+                command('workbench','tasks','prepare',payload['dataset_id'],'prediction','--recipe',payload['recipe'],*common)))
+    emit(payload,args,steps=steps)
 
 
 def _proposal(proposal):

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eda_tool"
-version = "0.5.0"
-description = "ETML Workbench: batch EDA, dataset storage and reviewed preprocessing"
+version = "0.6.0"
+description = "ETML Workbench: EDA, preprocessing, model experiments and prediction"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -21,6 +21,8 @@ dependencies = [
 [project.optional-dependencies]
 xgboost = ["xgboost>=2.0"]
 onnx = ["skl2onnx>=1.17", "onnxruntime>=1.18"]
+pytorch = ["torch>=2.6"]
+tensorflow = ["tensorflow>=2.18"]
 
 [project.scripts]
 workbench = "etml.cli:main"

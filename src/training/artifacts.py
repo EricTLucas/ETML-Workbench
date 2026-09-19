@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import json
 import platform
 
-from data.manifest import FileRecord, resolve_inside, write_json
+from data.manifest import FileRecord, resolve_inside, write_json, utc_now
 from data.workspace import _publish_directory
 
 
@@ -24,7 +24,7 @@ def staged_directory(destination):
 
 def environment():
     result = {'python':platform.python_version()}
-    for package in ('scikit-learn','skops','numpy','pandas','scipy','xgboost','eda_tool'):
+    for package in ('scikit-learn','skops','numpy','pandas','scipy','xgboost','torch','tensorflow','keras','eda_tool'):
         try:
             result[package] = version(package)
         except PackageNotFoundError:
@@ -38,7 +38,7 @@ def seal(directory, kind, metadata):
     for path in sorted(root.rglob('*')):
         if path.is_file():
             records.append(asdict(FileRecord.from_file(root,path)))
-    payload = {'format_version':1,'kind':kind,'metadata':metadata,'files':records}
+    payload = {'format_version':1,'kind':kind,'created_at':utc_now(),'metadata':metadata,'files':records}
     write_json(root/'manifest.json',payload)
     return payload
 

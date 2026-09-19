@@ -87,7 +87,15 @@ def main(argv=None):
                        'split_counts':result.split_counts,'prepared_counts':result.prepared_counts,
                        'features':list(result.feature_columns),'target':result.target,
                        'fitted':str(result.directory/'preprocessing'/'fitted.json')}
-        print(json.dumps(payload,indent=None if args.json else 2,ensure_ascii=False,allow_nan=False))
+        from .display import emit, command
+        steps = []
+        if args.command=='create':
+            steps = [('Prepare train/validation/test data',command('workbench','tasks','prepare',args.dataset_id,
+                      args.task_id,'--workspace',args.workspace))]
+        elif args.command=='prepare':
+            steps = [('Train initial model candidates',command('workbench','models','train',args.dataset_id,
+                      args.task_id,result.run_id,'--workspace',args.workspace))]
+        emit(payload,args,steps=steps)
         return 0
     except (ValueError,TypeError,OSError,ImportError,ArithmeticError,KeyError,RuntimeError) as exc:
         print(f'error: {exc}',file=sys.stderr)

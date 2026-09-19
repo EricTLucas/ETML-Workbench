@@ -12,8 +12,8 @@ class ModelConfig:
     scale_numeric: bool | None = None
 
     def __post_init__(self):
-        if type(self.seed) is not int or not isinstance(self.params, dict):
-            raise ValueError('seed must be an integer and params a dictionary')
+        if type(self.seed) is not int or not 0<=self.seed<2**32 or not isinstance(self.params, dict):
+            raise ValueError('seed must be an integer from 0 to 2**32-1 and params a dictionary')
         if isinstance(self.categorical_columns, str):
             raise ValueError('categorical_columns must be a sequence')
         object.__setattr__(self, 'categorical_columns', tuple(self.categorical_columns))
