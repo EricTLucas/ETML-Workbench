@@ -43,12 +43,15 @@ class PreprocessingWorkflow:
         if source_version == 'raw':
             records = dataset.manifest.files
             paths = dataset.raw_files
+            if dataset.manifest.split_files:
+                paths=(resolve_inside(dataset.directory,dataset.manifest.split_files['train']),)
         else:
             manifest = self.workspace.get_version(dataset_id, source_version, verify=verify)
             root = resolve_inside(dataset.directory, 'processed/'+source_version)
             records = manifest.files
             paths = tuple(resolve_inside(root, item.path) for item in records)
         identity = fingerprint({'dataset_id': dataset_id, 'source_version': source_version,
+                                **({'split_files':dataset.manifest.split_files} if source_version=='raw' and dataset.manifest.split_files else {}),
                                 'files': [{'path': r.path, 'bytes': r.size_bytes, 'sha256': r.sha256}
                                           for r in records]})
         return dataset, list(paths), identity

@@ -28,11 +28,15 @@ def parser():
     root = argparse.ArgumentParser(prog='workbench', description='ETML Workbench: EDA, preprocessing, model experiments and prediction')
     root.add_argument('--version', action='version', version=f'ETML Workbench {__version__}')
     groups = root.add_subparsers(dest='group', required=True)
+    groups.add_parser('ui',help='Open the local upload and prediction interface',add_help=False)
     groups.add_parser('models', help='Training, prediction and model export', add_help=False)
     groups.add_parser('tasks', help='Prediction tasks and train/validation/test preparation', add_help=False)
     groups.add_parser('eda', help='Existing EDA analyze, plot, charts and report commands', add_help=False)
     data = groups.add_parser('datasets', help='Import and inspect preserved datasets')
     commands = data.add_subparsers(dest='command', required=True)
+    from .source_cli import COMMANDS
+    for name in sorted(COMMANDS):
+        commands.add_parser(name,help='Import a dataset source',add_help=False)
     imp = commands.add_parser('import', help='Preserve original files; does not run EDA')
     imp.add_argument('files', nargs='+')
     imp.add_argument('--name')
@@ -246,6 +250,12 @@ def _dispatch(args):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
+        if argv and argv[0]=='ui':
+            from .ui import launch
+            return launch(argv[1:])
+        if len(argv)>1 and argv[0]=='datasets':
+            from .source_cli import COMMANDS,main as source_main
+            if argv[1] in COMMANDS: return source_main(argv[1:])
         if argv and argv[0] == 'models':
             from .model_cli import main as model_main
             return model_main(argv[1:])

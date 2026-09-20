@@ -114,7 +114,7 @@ class DatasetWorkspace:
                 digest.update(block)
         return FileRecord(relative, size, digest.hexdigest())
 
-    def _import(self, sources, *, name, dataset_id, max_bytes) -> Dataset:
+    def _import(self, sources, *, name, dataset_id, max_bytes, split_files=None, provenance=None) -> Dataset:
         if not isinstance(name, str) or not name.strip():
             raise ValueError('name must be a nonempty display name')
         if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
@@ -144,7 +144,8 @@ class DatasetWorkspace:
                         record = self._copy(source, target, 'raw/'+filename, remaining)
                     records.append(record)
                     total += record.size_bytes
-                manifest = DatasetManifest(dataset_id, name, utc_now(), tuple(records))
+                manifest = DatasetManifest(dataset_id, name, utc_now(), tuple(records),
+                    split_files=dict(split_files or {}),provenance=dict(provenance or {}))
                 manifest.save(staging / 'manifest.json')
                 # Publish only after every file and the manifest were written.
                 if destination.exists():
@@ -153,7 +154,7 @@ class DatasetWorkspace:
         return Dataset(destination, manifest)
 
     def import_files(self, paths, *, name: str | None = None, dataset_id: str | None = None,
-                     max_bytes: int | None = None) -> Dataset:
+                     max_bytes: int | None = None, provenance=None) -> Dataset:
         """Copy one file or an explicit list of files, bounded by chunk_size."""
         if isinstance(paths, (str, Path)):
             paths = [paths]
@@ -161,7 +162,33 @@ class DatasetWorkspace:
         if not paths or any(not p.is_file() for p in paths):
             raise ValueError('Provide one or more existing regular files')
         return self._import([(p.name, p) for p in paths], name=name or paths[0].stem,
-                            dataset_id=dataset_id, max_bytes=max_bytes)
+                            dataset_id=dataset_id, max_bytes=max_bytes, provenance=provenance)
+
+    def import_presplit(self, train, *, test=None, validation=None, name=None, dataset_id=None,
+                        max_bytes=None, provenance=None):
+        """Preserve separate files atomically without concatenating their split roles."""
+        uploads = {}
+        for role,path in {'train':train,'validation':validation,'test':test}.items():
+            if path is not None:
+                path=Path(path).expanduser().resolve()
+                if not path.is_file(): raise ValueError(f'{role} must be an existing file')
+                uploads[role]=(path.name,path)
+        return self.import_split_uploads(uploads,name=name,dataset_id=dataset_id,
+                                         max_bytes=max_bytes,provenance=provenance)
+
+    def import_split_uploads(self, uploads, *, name=None, dataset_id=None,max_bytes=None,provenance=None):
+        """UI API: role -> (portable filename, binary stream). Streams stay caller-owned."""
+        if 'train' not in uploads or set(uploads)-{'train','validation','test'}:
+            raise ValueError('Supply a train upload and optional validation/test uploads')
+        sources,roles=[],{}
+        for role in ('train','validation','test'):
+            if role in uploads:
+                filename,stream=uploads[role]
+                validate_filename(filename)
+                stored=role+'-'+filename
+                sources.append((stored,stream)); roles[role]='raw/'+stored
+        return self._import(sources,name=name or 'Presplit dataset',dataset_id=dataset_id,
+                            max_bytes=max_bytes,split_files=roles,provenance=provenance)
 
     def import_upload(self, stream: BinaryIO, *, filename: str, name: str | None = None,
                       dataset_id: str | None = None, max_bytes: int | None = None) -> Dataset:

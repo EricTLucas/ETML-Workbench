@@ -29,7 +29,7 @@ class PreparationResult:
 
 def prepare_task(workspace, dataset_id, task: TaskConfig, *, split_config=None, recipe=None,
                  source_version='raw', allow_processed_source=False, loader_options=None,
-                 batch_size=50_000, progress=None):
+                 batch_size=50_000, progress=None, validation_fraction=.2):
     workspace = workspace if isinstance(workspace, DatasetWorkspace) else DatasetWorkspace(workspace)
     split_config = split_config or SplitConfig(strategy='stratified' if task.task_type == 'classification' else 'random')
     recipe = Recipe.from_dict((recipe or Recipe()).to_dict())
@@ -39,7 +39,9 @@ def prepare_task(workspace, dataset_id, task: TaskConfig, *, split_config=None, 
                          'allow_processed_source=True and caller confirmation that cleanup was fixed, not learned.')
     workflow = PreprocessingWorkflow(workspace)
     _, source, identity = workflow._source(dataset_id, source_version, verify=True)
-    dataset = open_dataset(source, **(loader_options or {}))
+    stored=workspace.get(dataset_id)
+    split_sources_input={role:resolve_inside(stored.directory,path) for role,path in stored.manifest.split_files.items()} if source_version=='raw' else {}
+    dataset = open_dataset(split_sources_input.get('train',source), **(loader_options or {}))
     features = validate_task(task, dataset.schema(), split_config, recipe)
     workspace.create_task(dataset_id, task)
     with workspace.task_run(dataset_id, task.task_id) as draft:
@@ -47,8 +49,13 @@ def prepare_task(workspace, dataset_id, task: TaskConfig, *, split_config=None, 
         if current != identity:
             raise ValueError('Source changed during task preparation')
         write_json(draft.directory/'split_config.json', split_config.to_dict())
-        stats = split_dataset(source, draft.directory, task, split_config, batch_size=batch_size,
-                              loader_options=loader_options, progress=progress)
+        if split_sources_input:
+            from splitting.presplit import split_presplit
+            stats=split_presplit(split_sources_input,draft.directory,task,split_config,
+                validation_fraction=validation_fraction,batch_size=batch_size,loader_options=loader_options,progress=progress)
+        else:
+            stats = split_dataset(source, draft.directory, task, split_config, batch_size=batch_size,
+                                  loader_options=loader_options, progress=progress)
         # Verify the second source-reading pass used the original source bytes.
         _, _, current = workflow._source(dataset_id, source_version, verify=True)
         if current != identity:
@@ -98,7 +105,7 @@ def prepare_task(workspace, dataset_id, task: TaskConfig, *, split_config=None, 
                 raise ValueError(f'Preprocessing removed every row from {name}')
             prepared_counts[name] = info['rows']
             prepared_schemas[name] = info['schema']
-            if task.task_type == 'classification':
+            if task.task_type == 'classification' and not (name=='test' and not stats.get('test_labeled',True)):
                 from collections import Counter
                 counts = Counter()
                 prepared_source = open_dataset(draft.directory/'prepared'/name/'part-00000.parquet')
@@ -111,6 +118,7 @@ def prepare_task(workspace, dataset_id, task: TaskConfig, *, split_config=None, 
             if progress:
                 progress({'stage': 'prepared_'+name, 'rows': info['rows']})
         draft.metadata.update(source_version=source_version, source_fingerprint=identity,
+                              presplit=bool(split_sources_input),test_labeled=stats.get('test_labeled',True),
                               processed_source_override=allow_processed_source,
                               feature_columns=list(output_features), target=task.target, task_type=task.task_type,
                               split_statistics=stats, prepared_counts=prepared_counts,

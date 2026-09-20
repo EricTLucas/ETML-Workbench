@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import uuid
+from time import perf_counter
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
@@ -72,6 +73,8 @@ def _write_bundle(directory, adapter, encoder, fitted, config, task_type, classe
     write_json(directory/'labels.json',{'classes':classes,'probability_columns':{f'probability_{i}':v for i,v in enumerate(classes)}})
     write_json(directory/'metrics.json',metrics)
     write_json(directory/'environment.json',environment())
+    from .reproducibility import write_setup
+    write_setup(directory,config,origin)
     write_json(directory/'history.json',{'history':getattr(adapter,'history',[]),
                                          'summary':getattr(adapter,'training_summary',{})})
     metadata = {**origin,'model_file':model_path.relative_to(directory).as_posix()}
@@ -145,6 +148,7 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
     with staged_directory(destination) as staging:
         (staging/'candidates').mkdir()
         for i,config in enumerate(configs):
+            candidate_started=perf_counter()
             name = f'candidate-{i:03d}'
             if progress:
                 progress({'stage':'training','candidate':name,'model':f'{config.backend}:{config.algorithm}'})
@@ -166,6 +170,7 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
                             'categorical_unknowns':'all-zero encoding', 'numeric_missing':'training median fallback',
                             'excluded_rows':'returned with excluded_by_preprocessing status'}
             origin = {'dataset_id':dataset_id,'task_id':task_id,'preparation_run':preparation_run,
+                      'reset_patience':bool(reset_patience),
                       'preparation_manifest_sha256':preparation_digest,'training_run':run_id,'candidate':name,
                       'target':target,'task_type':task_type,'selection_split':'validation'}
             latest_checkpoint = None
@@ -181,19 +186,37 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
             def on_progress(event):
                 if progress:
                     progress({**event,'candidate':name})
+            encoding_seconds=perf_counter()-candidate_started
+            fit_started=perf_counter()
             adapter.fit_validation(x_train,y_train,validation_data=(x_val,y_val),progress=on_progress,
                 checkpoint=save_checkpoint,resume=resume,reset_patience=reset_patience,max_bytes=max_bytes)
+            fit_seconds=perf_counter()-fit_started
             probabilities = adapter.predict_proba(x_val) if task_type=='classification' else None
             scores = evaluate_predictions(y_val,adapter.predict(x_val),task_type,probabilities=probabilities,n_classes=len(classes))
             if scores.get(metric) is None:
                 raise ValueError(f'{metric} is undefined on this validation split; choose another metric')
             record = {'candidate':name,'model':config.to_dict(),'validation':scores,
+                      'fit_seconds':fit_seconds,'encoding_seconds':encoding_seconds,
+                      'is_baseline':config.backend=='sklearn' and config.algorithm=='dummy',
                       'training':getattr(adapter,'training_summary',{}),
                       'checkpoint':str(latest_checkpoint) if latest_checkpoint else None}
             leaderboard.append(record)
+            detail={}
+            if task_type=='classification':
+                from .evaluation import classification_details
+                detail=classification_details(y_val,adapter.predict(x_val),classes)
+            origin['resumed_from']=str(Path(resume).resolve()) if resume else None
+            input_schema['raw_dtypes']={c:str(reference[c].dtype) for c in reference}
             _write_bundle(staging/'candidates'/name,adapter,encoder,fitted,config,task_type,classes,input_schema,
-                          {'validation':scores},origin,reference,x_train[:64])
+                          {'validation':scores,'validation_details':detail,'fit_seconds':fit_seconds,
+                           'encoding_seconds':encoding_seconds,'training_rows':len(train),'validation_rows':len(validation)},
+                          origin,reference,x_train[:64])
+            record['total_seconds']=perf_counter()-candidate_started
             del x_train,x_val,adapter,encoder
+        baseline=next((r for r in leaderboard if r['is_baseline']),None)
+        for record in leaderboard:
+            record['baseline_score']=baseline['validation'][metric] if baseline else None
+            record['improvement_over_baseline']=(record['validation'][metric]-record['baseline_score'])*(1 if direction=='max' else -1) if baseline else None
         winner = sorted(leaderboard,key=lambda r:(-r['validation'][metric] if direction=='max' else r['validation'][metric],r['candidate']))[0]['candidate']
         write_json(staging/'selection.json',{'winner':winner,'metric':metric,'direction':direction,
                                             'selection_split':'validation','test_evaluated':False,'leaderboard':leaderboard,
@@ -218,6 +241,8 @@ def evaluate_test(workspace,dataset_id,task_id,training_run,*,candidate=None,max
         raise ValueError('Training run identity mismatch')
     preparation = metadata['preparation_run']
     manifest = workspace.get_task_run(dataset_id,task_id,preparation,verify=True)
+    if not manifest.metadata.get('test_labeled',True):
+        raise ValueError('The supplied test file has no target labels. Use models predict for predictions; test metrics require labels.')
     prep_root = resolve_inside(dataset.directory,f'tasks/{task_id}/runs/{preparation}')
     if sha256_file(prep_root/'manifest.json') != metadata['preparation_manifest_sha256']:
         raise ValueError('Preparation manifest changed since training')

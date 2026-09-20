@@ -26,6 +26,8 @@ def parser():
     prepare.add_argument('--group-column'); prepare.add_argument('--time-column'); prepare.add_argument('--time-format')
     prepare.add_argument('--max-classes', type=int, default=10_000)
     prepare.add_argument('--batch-size', type=int, default=50_000)
+    prepare.add_argument('--validation-fraction',type=float,default=.2,
+                         help='For presplit uploads without validation: fraction taken only from training')
     recipes = prepare.add_mutually_exclusive_group()
     recipes.add_argument('--recipe', help='Reviewed proposal filename inside dataset recipes/')
     recipes.add_argument('--recipe-file', help='Approved raw Recipe JSON file')
@@ -81,7 +83,8 @@ def main(argv=None):
                     print(f"{event['stage']}: {event['rows']:,} rows",file=sys.stderr)
             result = prepare_task(workspace,args.dataset_id,task,split_config=config,recipe=recipe,
                                   source_version=args.source_version,allow_processed_source=args.allow_processed_source,
-                                  loader_options=loader_options,batch_size=args.batch_size,progress=progress)
+                                  loader_options=loader_options,batch_size=args.batch_size,progress=progress,
+                                  validation_fraction=args.validation_fraction)
             payload = {'status':'ok','dataset_id':result.dataset_id,'task_id':result.task_id,
                        'run_id':result.run_id,'directory':str(result.directory),
                        'split_counts':result.split_counts,'prepared_counts':result.prepared_counts,

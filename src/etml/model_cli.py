@@ -58,7 +58,17 @@ def parser():
     export.add_argument('--output',required=True)
     export.add_argument('--format',choices=['bundle','native','onnx'],default='bundle')
     export.add_argument('--sample-data',help='Raw sample for ONNX parity verification')
-    for p in (predict,export):
+    example=commands.add_parser('predict-one',help='Predict one raw example and show probabilities/actual outcome')
+    values=example.add_mutually_exclusive_group(required=True)
+    values.add_argument('--values',help='JSON object of raw feature values')
+    values.add_argument('--example-file',help='A JSON object file')
+    values.add_argument('--input',help='Read a row from a supported dataset file')
+    example.add_argument('--row',type=int,default=0,help='Zero-based row number with --input')
+    template=commands.add_parser('input-template',help='Show required raw fields for a prediction')
+    setup=commands.add_parser('setup',help='Export setup instructions, code and train/validation data for replay')
+    setup.add_argument('--output',required=True)
+    setup.add_argument('--max-bytes',type=int,default=2*1024**3)
+    for p in (predict,export,example,template,setup):
         selector = p.add_mutually_exclusive_group(required=True)
         selector.add_argument('--bundle'); selector.add_argument('--dataset',dest='dataset_id')
         p.add_argument('--task',dest='task_id'); p.add_argument('--run',default='latest')
@@ -66,7 +76,7 @@ def parser():
     for p in (train,search,resume,test):
         p.add_argument('--max-rows',type=int,default=200_000)
         p.add_argument('--max-memory-mb',type=int,default=512)
-    for p in (catalog,train,search,resume,test,runs,compare,history,checkpoints,predict,export):
+    for p in (catalog,train,search,resume,test,runs,compare,history,checkpoints,predict,export,example,template,setup):
         p.add_argument('--workspace',default='datasets')
         p.add_argument('--json',action='store_true'); p.add_argument('--quiet',action='store_true')
     return root
@@ -143,6 +153,8 @@ def _training_steps(args,result):
             parts = ['workbench','models','resume',row['checkpoint'],'--epochs',row['training']['epoch']+10,*common]
             if row['training'].get('stopped_early'): parts.append('--reset-patience')
             steps.append((f"Continue {row['candidate']} for up to 10 more epochs",command(*parts)))
+    steps.append(('Export setup instructions and replay data',command('workbench','models','setup','--bundle',result.bundle,
+                  '--output',str(Path('exports')/(result.run_id+'-replay')),*common)))
     return steps
 
 
@@ -193,8 +205,11 @@ def main(argv=None):
                        'preparation_run':json.loads((result.directory/'manifest.json').read_text(encoding='utf-8'))['metadata']['preparation_run'],
                        'winner':result.winner,'bundle':str(result.bundle),'metric':result.metric,
                        'leaderboard':result.leaderboard,'test_used_for_selection':False}
-            table = (['Candidate','Model','Validation '+result.metric],[[r['candidate'],
-                r['model']['backend']+':'+r['model']['algorithm'],f"{r['validation'][result.metric]:.6g}"] for r in result.leaderboard])
+            metric_extra='f1_macro' if 'f1_macro' in result.leaderboard[0]['validation'] else 'mae'
+            table = (['Candidate','Model','Baseline','Validation '+result.metric,metric_extra,'Fit seconds','Improvement'],[[r['candidate'],
+                r['model']['backend']+':'+r['model']['algorithm'],'yes' if r['is_baseline'] else '',
+                f"{r['validation'][result.metric]:.6g}",f"{r['validation'][metric_extra]:.6g}",f"{r['fit_seconds']:.3f}",
+                f"{r['improvement_over_baseline']:+.6g}" if r['improvement_over_baseline'] is not None else 'n/a'] for r in result.leaderboard])
             steps = _training_steps(args,result)
         elif args.command=='runs':
             payload = {'runs':training_runs(args.workspace,args.dataset_id,args.task_id)}
@@ -238,6 +253,30 @@ def main(argv=None):
             bundle = Path(run['directory'])/'candidates'/payload['candidate']
             steps = [('Export this model',command('workbench','models','export','--bundle',bundle,
                      '--output',str(Path('exports')/run['run_id']/payload['candidate'])))]
+        elif args.command=='input-template':
+            from prediction.example import input_template
+            payload=input_template(_bundle(args))
+        elif args.command=='predict-one':
+            from prediction.example import predict_example
+            if args.input:
+                if args.row<0: raise ValueError('--row must be nonnegative')
+                from eda_tool.loader import open_dataset
+                from preprocessing.transforms.base import batches
+                index=args.row; values=None
+                with batches(lambda:open_dataset(args.input).iter_batches(batch_size=1000)) as iterator:
+                    for frame in iterator:
+                        if index<len(frame):
+                            values=json.loads(frame.iloc[[index]].to_json(orient='records'))[0]; break
+                        index-=len(frame)
+                if values is None: raise ValueError('Requested row is outside the dataset')
+            else:
+                values=_object(Path(args.example_file).read_text(encoding='utf-8') if args.example_file else args.values)
+            payload=predict_example(_bundle(args),values)
+        elif args.command=='setup':
+            from training.reproducibility import export_reproduction
+            path=export_reproduction(_bundle(args),args.output,workspace=args.workspace,max_bytes=args.max_bytes)
+            payload={'status':'ok','directory':str(path),'setup':str(path/'SETUP.md'),'contains_training_data':True}
+            steps=[('After installing the pinned environment in SETUP.md, replay',command('python',path/'reproduce.py'))]
         elif args.command=='predict':
             from workflows.prediction import predict_file
             payload = predict_file(_bundle(args),args.input,args.output,batch_size=args.batch_size,

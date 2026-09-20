@@ -136,6 +136,8 @@ class DatasetManifest:
     schema: dict[str, str] = field(default_factory=dict)
     format_version: int = FORMAT_VERSION
     kind: str = 'dataset'
+    split_files: dict[str, str] = field(default_factory=dict)
+    provenance: dict = field(default_factory=dict)
 
     def __post_init__(self):
         validate_name(self.dataset_id)
@@ -144,6 +146,15 @@ class DatasetManifest:
             raise ValueError('Dataset display name must be nonempty')
         if not self.files or any(not f.path.startswith('raw/') for f in self.files):
             raise ValueError('Dataset files must live under raw/')
+        if self.split_files:
+            if 'train' not in self.split_files or set(self.split_files)-{'train','validation','test'}:
+                raise ValueError('Presplit data requires train and optional validation/test roles')
+            values = list(self.split_files.values())
+            if len(set(values))!=len(values) or not set(values)<={f.path for f in self.files}:
+                raise ValueError('Split files must reference distinct preserved raw files')
+        if not isinstance(self.provenance,dict):
+            raise ValueError('provenance must be a JSON dictionary')
+        json.dumps(self.provenance,allow_nan=False)
 
     def save(self, path: Path, *, overwrite: bool = False) -> Path:
         return write_json(path, asdict(self), overwrite=overwrite)
