@@ -25,9 +25,13 @@ def _profile_options(parser):
 
 
 def parser():
-    root = argparse.ArgumentParser(prog='workbench', description='ETML Workbench: EDA, preprocessing, model experiments and prediction')
+    root = argparse.ArgumentParser(prog='workbench', description='ETML Workbench: run without arguments to choose a project',
+        epilog='Start: workbench | Import: workbench PROJECT -upload FILE | Library: workbench sklearn | Project options: workbench PROJECT --help')
     root.add_argument('--version', action='version', version=f'ETML Workbench {__version__}')
     groups = root.add_subparsers(dest='group', required=True)
+    groups.add_parser('projects', help='List saved projects', add_help=False)
+    for name in ('library','sklearn','huggingface','openml'):
+        groups.add_parser(name, help='Dataset library instructions', add_help=False)
     groups.add_parser('ui',help='Open the local upload and prediction interface',add_help=False)
     groups.add_parser('models', help='Training, prediction and model export', add_help=False)
     groups.add_parser('tasks', help='Prediction tasks and train/validation/test preparation', add_help=False)
@@ -250,6 +254,27 @@ def _dispatch(args):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
+        known = {'ui','datasets','preprocess','tasks','models','eda','projects','library','sklearn','huggingface','openml'}
+        if not argv or argv[0] in {'--projects-dir','--no-open','--no-eda','--no-continue','--continue','--status','--models','--predict-model','--predict'} or (argv[0] not in known and not argv[0].startswith('-')):
+            from .project_cli import main as project_main
+            return project_main(argv)
+        if argv[0] in {'library','sklearn','huggingface','openml'}:
+            from .project_cli import library
+            if len(argv)>1 and argv[1:] != ['--help']:
+                raise ValueError('Use workbench PROJECT --'+argv[0]+' DATASET to import into a project')
+            library(None if argv[0]=='library' else argv[0])
+            return 0
+        if argv[0]=='projects':
+            import os
+            from data.projects import ProjectStore
+            listing = argparse.ArgumentParser(prog='workbench projects')
+            listing.add_argument('--projects-dir',default=os.environ.get('ETML_PROJECTS_DIR','projects'))
+            options = listing.parse_args(argv[1:])
+            projects = ProjectStore(options.projects_dir).list()
+            print('Projects' if projects else 'No projects yet. Run workbench to create one.')
+            for project in projects:
+                print('  '+project.name)
+            return 0
         if argv and argv[0]=='ui':
             from .ui import launch
             return launch(argv[1:])

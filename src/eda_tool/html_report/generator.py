@@ -51,6 +51,26 @@ class HtmlReport:
 <img src="data:image/png;base64,{encoded}" alt="{_text(title)}" loading="lazy">
 </figure>'''
 
+    def _row_viewer(self):
+        views = _section(self.profile, 'row_views')
+        if not views:
+            return ''
+        tabs, panels = [], []
+        for key, label in [('first','First 10 rows'), ('middle','Middle 10 rows'), ('last','Last 10 rows')]:
+            frame = views.get(key)
+            if frame is None:
+                continue
+            checked = ' checked' if key == 'first' else ''
+            tabs.append(f'<input type="radio" name="row-window" id="rows-{key}"{checked}><label for="rows-{key}">{label}</label>')
+            shown = frame.iloc[:10]
+            headers = '<th scope="col">Row</th>'+''.join(f'<th scope="col">{_text(c)}</th>' for c in shown.columns)
+            body = ''.join('<tr><th scope="row">'+_text(index)+'</th>'+''.join(
+                '<td>'+_text(value)+'</td>' for value in row)+'</tr>' for index, row in zip(shown.index, shown.itertuples(index=False,name=None)))
+            if not body:
+                body = f'<tr><td colspan="{len(shown.columns)+1}">No rows available</td></tr>'
+            panels.append(f'<div class="row-panel rows-{key} table-wrap" tabindex="0" aria-label="{label}"><table><thead><tr>{headers}</tr></thead><tbody>{body}</tbody></table></div>')
+        return '<section class="row-viewer"><h2>Explore the data</h2><p class="caption">Exact source-order rows; row numbers start at 1. Windows overlap for small datasets. Scroll horizontally for all columns.</p><div class="row-tabs">'+''.join(tabs+panels)+'</div></section>'
+
     def render(self):
         summary = _section(self.profile, 'summary')
         columns = _section(self.profile, 'columns')
@@ -87,6 +107,7 @@ section{{margin:32px 0}}.stats{{display:grid;grid-template-columns:repeat(auto-f
 .table-wrap{{overflow-x:auto}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line);overflow-wrap:anywhere;max-width:300px}}th{{font-weight:500;color:var(--muted)}}
 .gallery{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}}figure{{margin:0;min-width:0;background:var(--surface);border-radius:12px;overflow:hidden}}img{{display:block;width:100%;height:auto}}li{{margin-bottom:6px;overflow-wrap:anywhere}}
 footer{{border-top:1px solid var(--line);padding-top:18px;color:var(--muted);font-size:12px}}@media(max-width:760px){{.gallery{{grid-template-columns:1fr}}main{{padding:24px 14px}}}}
+.row-viewer{{background:var(--surface);padding:22px;border:1px solid var(--line);border-radius:14px}}.row-tabs>input{{position:absolute;opacity:0;width:1px;height:1px}}.row-tabs>label{{display:inline-block;cursor:pointer;border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin:0 8px 16px 0;color:var(--muted)}}.row-tabs>input:checked+label{{background:var(--accent);color:var(--bg);border-color:var(--accent)}}.row-tabs>input:focus-visible+label{{outline:2px solid var(--text);outline-offset:3px}}.row-panel{{display:none;max-height:480px}}#rows-first:checked~.rows-first,#rows-middle:checked~.rows-middle,#rows-last:checked~.rows-last{{display:block}}.row-panel th{{position:sticky;top:0;background:var(--surface)}}.row-panel td{{min-width:100px;white-space:pre-wrap}}
 @media print{{figure{{break-inside:avoid}}main{{padding:0}}.gallery{{display:block}}figure{{margin-bottom:20px}}}}
 </style></head><body><main><header><div class="eyebrow">ETML WORKBENCH EDA</div><h1>{_text(self.title)}</h1>
 <p class="caption">ETML report · full-data aggregates and sampled views are labeled separately.</p></header>
@@ -96,7 +117,7 @@ footer{{border-top:1px solid var(--line);padding-top:18px;color:var(--muted);fon
 <div class="stat"><dt>Duplicate rows</dt><dd>{duplicate}</dd></div></dl>
 <section><h2>Column overview</h2><p class="caption">Means and standard deviations use finite numeric values. Unavailable distinct counts are not guessed.</p>
 <div class="table-wrap"><table><thead><tr><th>Column</th><th>Role</th><th>Missing</th><th>Distinct</th><th>Mean</th><th>Std. deviation</th></tr></thead><tbody>{table}</tbody></table></div>{column_note}</section>
-{findings}<section><h2>Visualizations</h2><div class="gallery">{gallery}</div></section>
+{findings}<section><h2>Visualizations</h2><div class="gallery">{gallery}</div></section>{self._row_viewer()}
 <footer>Self-contained export · no network resources or scripts · sampled counts are not population estimates.<br>
 This report may contain dataset-derived values, words and plotted observations. It is not anonymized.</footer>
 </main></body></html>'''

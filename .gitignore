@@ -57,3 +57,6 @@ sample_files/
 
 manual_test*
 eda_report.html
+
+# Project workspaces contain uploaded data and generated reports
+projects/

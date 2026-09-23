@@ -1,6 +1,6 @@
 # ETML Workbench
 
-ETML Workbench is a local Python workbench for exploring tabular data, reviewing preprocessing, preparing prediction tasks, comparing models, making predictions, and exporting reusable models.
+ETML Workbench is a local Python workbench for exploring data, reviewing preprocessing, preparing prediction tasks, comparing models, making predictions, and exporting reusable models. Its project model library also supports image classification, text models, univariate forecasting, recommendations, and tabular unsupervised exploration.
 
 The current workflow is:
 
@@ -17,7 +17,184 @@ Import and preserve raw data
 
 The CLI is `workbench`. An optional local browser interface is available with `workbench ui`. Python packages remain independently importable for integrations.
 
-This README describes the implemented 0.7.0 update. It assumes those files have been merged into the repository, including its `pyproject.toml`.
+This README describes the implemented 0.12.0 update. It assumes those files have been merged into the repository, including its `pyproject.toml`.
+
+Saved-model inspection now includes **Create a new model**, retrying failed configurations, and additional-epoch training for resumable PyTorch/TensorFlow MLPs. Open `workbench PROJECT --predict` and choose a saved entry; failed entries show their error, settings, and retry action. See [PREDICTION_GUIDE.md](PREDICTION_GUIDE.md).
+
+**Guided prediction:** splitting now opens model selection automatically; completed training opens model results and prediction tools. Use `workbench PROJECT --predict` to revisit saved models, inspect rows and true values, view training details, evaluate a tabular test split, or export models and their associated data. See [PREDICTION_GUIDE.md](PREDICTION_GUIDE.md) for the updated flow and training without validation.
+
+**New model workflow:** run `workbench PROJECT --models` to choose, name, configure and train a model. See [MODEL_GUIDE.md](MODEL_GUIDE.md) for the full catalog, optional installations, image/text/time-series/recommendation input formats, prediction examples, export support, and limitations. The existing tabular workflow below remains compatible.
+
+## Start with a project (new in 0.8)
+
+After installation, enter:
+
+```bash
+workbench
+```
+
+Choose **New project** or **Existing project**. New projects ask for a name, then offer a local upload or dataset library. Existing projects are listed for selection. Use a portable name such as `customer-churn` (letters, digits, hyphens, underscores; no spaces). Enter `q` at a numbered menu to cancel.
+
+To create a project and import directly:
+
+```bash
+workbench flowers --sklearn iris
+workbench titanic -upload "uploads/train.csv"
+workbench titanic -upload "uploads/train.csv" --test "uploads/test.csv"
+```
+
+`-upload` and `--upload` are aliases. Add `--validation FILE` for a supplied validation set. Every import preserves a new dataset snapshot within the named project; previous imports are kept. The most recently imported snapshot becomes the current dataset.
+
+By default, import shows the first five source/training rows, generates summary EDA, saves its HTML report and bounded sample, and opens the report in your default browser. It prints a short status and one next-step command rather than profile JSON or recipe internals. For presplit inputs, this EDA uses training data only.
+
+```bash
+workbench flowers --sklearn iris --no-open
+workbench large-data --upload data.parquet --no-eda
+workbench large-data --eda --no-open
+```
+
+`--no-open` still generates the report; `--no-eda` skips it entirely. `--eda` analyzes the current saved dataset without importing it again. If EDA fails, the import remains available and a retry command is printed (exit code 3). A browser-opening failure leaves a usable report path.
+
+Find datasets and return to a project:
+
+```bash
+workbench sklearn
+workbench huggingface
+workbench openml
+workbench library
+workbench projects
+workbench flowers
+```
+
+Provider commands show instructions and examples. Import a chosen provider dataset with `workbench PROJECT --sklearn NAME`, `--huggingface OWNER/DATASET`, or `--openml DATA_ID`. Direct file URLs use `--url URL`. Hugging Face also supports `--config`, `--split`, `--revision`, and `--columns`. Import limits default to 200,000 provider rows and 512 MiB; use `--max-rows` and `--max-memory-mb` to adjust applicable limits. EDA has `--batch-size` and `--sample-size` controls.
+
+Project storage is isolated:
+
+```text
+projects/
+└── flowers/
+    ├── project.json
+    └── datasets/
+        └── data-GENERATED_ID/
+            ├── raw/
+            ├── profiles/overview-GENERATED_ID/report.html
+            ├── recipes/
+            ├── processed/
+            └── tasks/   (created when you define a task)
+```
+
+The default root is `projects` relative to the current directory. Set `ETML_PROJECTS_DIR` or consistently pass `--projects-dir PATH` to use another location. `workbench --no-open` starts the wizard with automatic browser opening disabled. `workbench PROJECT --help` lists project options.
+
+Reopening a project shows its dataset, preview, report location, and saved raw/processed/split artifacts. In an interactive terminal it offers the next unfinished preparation stage. Existing standalone `datasets/` workspaces are unchanged and are not automatically moved into projects. The local Streamlit UI remains available separately.
+
+## Guided preprocessing and splitting (new in 0.9)
+
+The project flow now continues through preparation, stopping before model training:
+
+```text
+Project → import → preview + EDA → target/features → review recipe
+        → five-row before/after preview → save processed copy
+        → choose split → save prepared train/validation/test files
+```
+
+Start fresh or continue an existing project:
+
+```bash
+workbench
+workbench flowers --sklearn iris
+workbench flowers --continue
+```
+
+In a terminal, imports automatically offer **Review preprocessing now** or **Save for later**. For redirected input/scripts, `--continue` explicitly enables the questions. Use `--no-continue` to stop after importing and EDA; `workbench flowers --status` shows saved artifacts without asking questions. `--no-open` and `--no-eda` retain their EDA-specific meanings and do not disable preparation questions.
+
+### Review the recipe
+
+1. Select the target column. Its values are protected from feature preprocessing.
+2. Choose classification or regression. This configures validation and the usual split strategy; no model is trained.
+3. Optionally exclude ID or unwanted columns using their displayed column numbers. Excluded features are omitted from prepared data. If you intend to split by a group/time column, exclude that control from feature preprocessing here.
+4. Choose whether missing targets should stop preparation or be excluded during splitting.
+5. Choose **Review suggested changes**, **Load custom recipe JSON**, **Keep features unchanged**, or **Save for later**.
+6. For each suggested/custom recipe step, choose **Keep**, **Change settings**, or **Skip**. Missing-value changes offer mean, median, mode, or a constant value. Other transformations accept a parameter object.
+7. Optionally add a custom transformation using the implemented transform catalog, selected columns, and JSON parameters.
+
+Suggestions reuse the existing EDA-based recipe rules. The wizard saves your reviewed recipe and its approval fingerprints. Targets and excluded features cannot be transformed. Invalid recipes fail validation rather than silently changing the target.
+
+A custom recipe file may contain a raw recipe such as this (replace `Age` with an actual feature):
+
+```json
+{
+  "format_version": 1,
+  "name": "Median age cleanup",
+  "steps": [
+    {"operation": "fill_missing", "columns": ["Age"], "params": {"strategy": "median"}}
+  ]
+}
+```
+
+The wizard also accepts a saved preprocessing-proposal wrapper. It asks you to review imported steps; the JSON file does not bypass approval.
+
+### Preview and save preprocessing
+
+The wizard shows up to five original feature rows before and after the recipe. Row indexes stay visible, so rows removed by a transformation do not appear to shift into another input row's place. The target is preserved in saved data but omitted from the feature-change preview.
+
+Choose **Save processed data**, **Edit recipe**, or **Save recipe and finish later**. On save, the complete processed inspection copy is written as Parquet under the dataset's `processed/vN/data/` folder, alongside the reviewed recipe, learned values, and manifest. For presplit uploads this inspection copy contains the training upload only.
+
+**The pre-split copy is for inspection.** Its learned statistics use the available source/training upload. The later split stage always starts from preserved raw rows and refits the same reviewed recipe on the final training split only. Validation and test use that fitted state. This prevents whole-source imputation from leaking into model evaluation; inspection values can therefore differ from final split values. The artifact metadata records this distinction.
+
+### Choose and save a split
+
+Unsplit data offers:
+
+- 70% train / 15% validation / 15% test.
+- 80% / 10% / 10%.
+- 60% / 20% / 20%.
+- Custom percentages totaling 100, with positive training size.
+
+Choose the split strategy next: stratified (usual classification choice), random (usual regression choice), group, or chronological. Group/time strategies ask for their control column; chronological splits also ask for the date format. The seed defaults to 42. Invalid percentages can be corrected in the same prompt; incompatible split settings leave the saved processed copy intact.
+
+For presplit uploads, supplied test/validation membership is preserved. If validation was not uploaded, choose 20%, 15%, 10%, or a custom percentage taken only from the training upload. The final preparation stores original split rows, assignment IDs, fitted preprocessing, and prepared split rows. Missing unlabeled-test targets remain supported.
+
+Successful preparation prints the stored paths and row counts and automatically opens model selection. You can finish for now there, or choose and train a model. Completed training opens results and prediction tools. Returning to a project offers preprocessing/splits, models, and prediction/details/export; previous artifacts are preserved.
+
+### Reopen and inspect saved work
+
+```bash
+workbench flowers
+workbench flowers --status
+workbench flowers --continue
+workbench flowers --dataset-id data-PREVIOUS_ID --continue
+```
+
+The project status lists earlier dataset imports with copyable selection commands. Preparation state belongs to each dataset, so selecting an older import restores its own recipe/processed/split stage.
+
+```text
+projects/flowers/datasets/data-ID/
+├── raw/                             # Preserved original files
+├── profiles/overview-ID/
+│   ├── report.html                  # Includes row selector
+│   └── row_views.json               # Exact windows; integrity checked
+├── recipes/project-ID.json          # Reviewed recipe
+├── project-preparation.json         # Current stage + artifact history
+├── processed/v1/
+│   ├── data/part-00000.parquet       # Inspection copy
+│   ├── recipe.json                  # Recipe, fit state, and purpose
+│   └── manifest.json
+└── tasks/task-ID/runs/run-ID/
+    ├── assignments/part-00000.parquet
+    ├── splits/{train,validation,test}/part-00000.parquet
+    ├── prepared/{train,validation,test}/part-00000.parquet
+    ├── preprocessing/{recipe.json,fitted.json}
+    ├── split_config.json
+    └── manifest.json
+```
+
+### HTML data viewer
+
+New HTML EDA exports include **Explore the data** below the charts. Select **First 10 rows**, **Middle 10 rows**, or **Last 10 rows**. These are exact contiguous windows in source order, with one-based row numbers; small datasets show fewer rows and overlapping windows. The middle window is centered on the dataset, independently of the random chart sample. All columns are available through horizontal scrolling.
+
+The viewer is offline, keyboard-accessible, and script-free. Collecting the exact middle window adds a bounded-memory pass over the source. HTML exports save up to 30 source rows in `row_views.json` and embed them in the HTML, even without `--save-sample`; the separate random chart sample still requires `--save-sample`. A saved run can re-export the viewer without reopening the original dataset. Older reports need regenerating with `workbench PROJECT --eda` to acquire the windows.
+
+The following walkthroughs document the advanced command interface. Their standalone `datasets` workspace is separate from the new project flow.
 
 ## Contents
 
@@ -480,7 +657,7 @@ workbench models list
 | `pytorch:mlp` | Tabular MLP | Tabular MLP | Yes |
 | `tensorflow:mlp` | Tabular MLP | Tabular MLP | Yes |
 
-Catalog entries describe supported adapters, not whether every optional library is installed. CNNs, transformers, and a custom NumPy model backend are future extensions, not current adapters.
+The table above lists the original adapters. The expanded catalog includes additional sklearn estimators, LightGBM, CatBoost, CNNs, transformers, clustering, projections, forecasting and recommendation models; see [MODEL_GUIDE.md](MODEL_GUIDE.md). Catalog entries describe supported adapters, not whether optional libraries are installed. A custom NumPy backend remains a future extension.
 
 ### Train candidates
 
@@ -496,7 +673,7 @@ workbench models train titanic survival PREPARATION_RUN_ID --model sklearn:rando
 
 A dummy baseline is automatically included in ordinary training/search runs unless already supplied. The winner is selected on validation only. Default selection metrics are `balanced_accuracy` for classification and `rmse` for regression.
 
-The feature encoder fits on training data: numeric missing values use median imputation, categorical values use one-hot encoding, and unknown categories are ignored by the fitted one-hot encoder. Numeric scaling defaults on for linear/MLP models. Numeric columns are numeric unless listed in `--categorical`; EDA's low-cardinality category inference is separate.
+The feature encoder fits on training data: numeric missing values use median imputation, categorical values use one-hot encoding, and unknown categories are ignored by the fitted one-hot encoder. Numeric scaling defaults on for linear/MLP models, SVM, KNN and the linear-containing voting/stacking ensembles. Numeric columns are numeric unless listed in `--categorical`; EDA's low-cardinality category inference is separate.
 
 For multiple model configurations, create `models.json`:
 

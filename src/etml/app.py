@@ -15,12 +15,12 @@ from prediction.example import predict_example
 
 
 def show_result(result,dataset_id,task_id):
-    st.success('Training complete. Candidates were compared on validation data.')
+    st.success('Training complete. Candidates were compared on validation data.' if result.leaderboard[0]['validation'] else 'Training complete without validation. Scores below are in-sample training metrics.')
     rows=[]
     for row in result.leaderboard:
         rows.append({'Model':row['model']['backend']+':'+row['model']['algorithm'],
                      'Candidate':row['candidate'],'Baseline':row['is_baseline'],
-                     'Fit seconds':round(row['fit_seconds'],3),**row['validation'],
+                     'Fit seconds':round(row['fit_seconds'],3),**(row['validation'] or row.get('training_metrics',{})),
                      'Improvement over baseline':row['improvement_over_baseline']})
     st.dataframe(pd.DataFrame(rows),hide_index=True)
     st.caption('F1 macro weights each class equally. Fit time includes epoch checkpoint writing for neural models.')
@@ -123,7 +123,8 @@ def train_page(ws):
     if dataset is None: return
     task=select_task(dataset)
     if task is None: return
-    choices=st.multiselect('Models',list(available_models()),default=['sklearn:linear','sklearn:random_forest'])
+    task_config=json.loads((dataset.directory/'tasks'/task/'task.json').read_text(encoding='utf-8'))
+    choices=st.multiselect('Models',[k for k,v in available_models().items() if task_config['task_type'] in v['tasks']],default=['sklearn:linear','sklearn:random_forest'])
     epochs=st.number_input('Neural epochs',min_value=1,value=30)
     st.caption('The latest preparation is used. A dummy baseline is included automatically.')
     if st.button('Train and compare',disabled=not choices):

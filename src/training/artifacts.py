@@ -24,7 +24,7 @@ def staged_directory(destination):
 
 def environment():
     result = {'python':platform.python_version()}
-    for package in ('scikit-learn','skops','numpy','pandas','scipy','xgboost','torch','tensorflow','keras','eda_tool'):
+    for package in ('scikit-learn','skops','numpy','pandas','scipy','xgboost','lightgbm','catboost','torch','torchvision','transformers','tokenizers','safetensors','statsmodels','implicit','tensorflow','keras','eda_tool'):
         try:
             result[package] = version(package)
         except PackageNotFoundError:

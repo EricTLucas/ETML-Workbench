@@ -9,11 +9,24 @@ class NeuralAdapter(ModelAdapter):
     def __init__(self, config, task_type):
         self.config, self.task_type = config, task_type
         defaults = {'hidden_sizes':[64,32], 'epochs':30, 'batch_size':64,
-                    'learning_rate':0.001, 'patience':5, 'min_delta':0.0}
+                    'learning_rate':0.001, 'patience':5, 'min_delta':0.0,
+                    'optimizer':'adam','regularizer':'none','regularization_strength':0.0001,
+                    'loss':'auto','activation':'relu'}
         unknown = set(config.params)-set(defaults)
         if unknown:
             raise ValueError(f'Unsupported MLP settings: {sorted(unknown)}')
         self.options = {**defaults,**config.params}
+        if self.options['optimizer'] not in {'adam','adamw','sgd','rmsprop'}:
+            raise ValueError('optimizer must be adam, adamw, sgd or rmsprop')
+        if self.options['regularizer'] not in {'none','l1','l2'}:
+            raise ValueError('regularizer must be none, l1 or l2')
+        if self.options['activation'] not in {'relu','tanh','gelu'}:
+            raise ValueError('activation must be relu, tanh or gelu')
+        loss = self.options['loss']
+        allowed = {'auto','cross_entropy'} if task_type=='classification' else {'auto','mse','mae','huber'}
+        if loss not in allowed:
+            raise ValueError('Loss is incompatible with this task')
+        self.loss_name = ('cross_entropy' if task_type=='classification' else 'mse') if loss=='auto' else loss
         for key in ('epochs','batch_size'):
             if type(self.options[key]) is not int or self.options[key]<1:
                 raise ValueError(f'{key} must be a positive integer')
@@ -23,7 +36,7 @@ class NeuralAdapter(ModelAdapter):
         hidden = self.options['hidden_sizes']
         if not isinstance(hidden,(tuple,list)) or any(type(v) is not int or v<1 for v in hidden):
             raise ValueError('hidden_sizes must be a list of positive integers')
-        for key in ('learning_rate','min_delta'):
+        for key in ('learning_rate','min_delta','regularization_strength'):
             value = self.options[key]
             if isinstance(value,bool) or not isinstance(value,(int,float)) or not np.isfinite(value) or value<0:
                 raise ValueError(f'Invalid {key}')
@@ -64,8 +77,9 @@ class NeuralAdapter(ModelAdapter):
             loss = float(-np.log(np.clip(probability[np.arange(len(y)),y],1e-15,1.)).mean())
             return {'loss':loss,'accuracy':float((probability.argmax(axis=1)==y).mean())}
         error = self.predict(x).astype(np.float64)-y
-        loss = float(np.mean(error**2))
-        return {'loss':loss,'rmse':float(np.sqrt(loss))}
+        mse = float(np.mean(error**2))
+        loss = mse if self.loss_name=='mse' else float(np.mean(np.abs(error))) if self.loss_name=='mae' else float(np.mean(np.where(np.abs(error)<=1,0.5*error**2,np.abs(error)-0.5)))
+        return {'loss':loss,'rmse':float(np.sqrt(mse))}
 
     def fit(self,x,y):
         raise ValueError('Neural training requires explicit validation_data')
@@ -100,20 +114,20 @@ class NeuralAdapter(ModelAdapter):
                 indices = order[start:start+size]
                 self._train_batch(self._dense(x[indices]),y[indices])
             train_metrics = self._metrics(x,y)
-            val_metrics = self._metrics(*validation_data)
+            val_metrics = self._metrics(*validation_data) if validation_data is not None else {}
             if not all(np.isfinite(v) for v in [*train_metrics.values(),*val_metrics.values()]):
                 raise ValueError('Training diverged: nonfinite epoch metrics')
             row = {'epoch':epoch,**{'train_'+k:v for k,v in train_metrics.items()},
                    **{'validation_'+k:v for k,v in val_metrics.items()}}
             self.state['history'].append(row)
             best = self.state['best_loss']
-            if best is None or val_metrics['loss'] < best-self.options['min_delta']:
-                self.state.update(best_loss=val_metrics['loss'],best_epoch=epoch,bad_epochs=0)
+            if validation_data is None or best is None or val_metrics['loss'] < best-self.options['min_delta']:
+                self.state.update(best_loss=val_metrics.get('loss'),best_epoch=epoch,bad_epochs=0)
                 self._snapshot_best()
             else:
                 self.state['bad_epochs']+=1
             self.state['epoch']=epoch
-            patience = self.options['patience']
+            patience = self.options['patience'] if validation_data is not None else None
             self.state['stopped_early'] = patience is not None and self.state['bad_epochs']>=patience
             saved = checkpoint(self,self.state) if checkpoint else None
             if progress:
@@ -123,6 +137,7 @@ class NeuralAdapter(ModelAdapter):
         self._restore_best()
         self.history = self.state['history']
         self.training_summary = {k:v for k,v in self.state.items() if k!='history'}
+        self.training_summary['selection']='best validation loss' if validation_data is not None else 'final epoch; no validation/early stopping'
         return self
 
     def save(self,directory):

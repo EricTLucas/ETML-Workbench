@@ -25,6 +25,26 @@ def _xgboost(config, task_type):
 _REGISTRY = {('sklearn', name): ModelSpec(_sklearn, onnx=name != 'dummy')
              for name in ('dummy', 'linear', 'random_forest')}
 _REGISTRY['xgboost', 'boosted_trees'] = ModelSpec(_xgboost)
+for name in ('decision_tree','extra_trees','gradient_boosting','adaboost','svm','knn','voting','stacking'):
+    _REGISTRY['sklearn',name]=ModelSpec(_sklearn)
+for name in ('linear_regression','ridge','lasso','elastic_net'):
+    _REGISTRY['sklearn',name]=ModelSpec(_sklearn,task_types=('regression',),probabilities=False)
+for name in ('logistic_regression','multinomial_logistic','gaussian_nb','multinomial_nb','bernoulli_nb'):
+    _REGISTRY['sklearn',name]=ModelSpec(_sklearn,task_types=('classification',))
+
+
+def _lightgbm(config,task_type):
+    from .adapters.boosting import LightGBMAdapter
+    return LightGBMAdapter(config,task_type)
+
+
+def _catboost(config,task_type):
+    from .adapters.boosting import CatBoostAdapter
+    return CatBoostAdapter(config,task_type)
+
+
+_REGISTRY['lightgbm','boosted_trees']=ModelSpec(_lightgbm)
+_REGISTRY['catboost','boosted_trees']=ModelSpec(_catboost)
 
 
 def _torch(config, task_type):

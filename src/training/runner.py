@@ -68,7 +68,15 @@ def _write_bundle(directory, adapter, encoder, fitted, config, task_type, classe
     model_path = adapter.save(directory)
     dump_safe(encoder,directory/'encoder.skops')
     fitted.save(directory/'preprocessing.json')
-    write_json(directory/'model_config.json',{'config':config.to_dict(),'task_type':task_type})
+    def parameter(value):
+        if isinstance(value,dict): return {str(k):parameter(v) for k,v in value.items()}
+        if isinstance(value,(tuple,list)): return [parameter(v) for v in value]
+        if isinstance(value,np.generic): return parameter(value.item())
+        if isinstance(value,float) and not np.isfinite(value): return str(value)
+        return value if value is None or isinstance(value,(str,int,float,bool)) else repr(value)
+    estimator=getattr(adapter,'estimator',None)
+    effective=estimator.get_params(deep=False) if estimator is not None and hasattr(estimator,'get_params') else getattr(adapter,'options',config.params)
+    write_json(directory/'model_config.json',{'config':config.to_dict(),'task_type':task_type,'effective_parameters':parameter(effective)})
     write_json(directory/'schema.json',schema)
     write_json(directory/'labels.json',{'classes':classes,'probability_columns':{f'probability_{i}':v for i,v in enumerate(classes)}})
     write_json(directory/'metrics.json',metrics)
@@ -114,8 +122,9 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
     features = metadata['feature_columns']
     train = _load_frame(preparation/'prepared/train/part-00000.parquet',max_rows,max_bytes)
     validation = _load_frame(preparation/'prepared/validation/part-00000.parquet',max_rows,max_bytes)
-    if train.empty or validation.empty:
-        raise ValueError('Training and validation must both be nonempty; test data is not used for selection')
+    if train.empty:
+        raise ValueError('Training must be nonempty')
+    has_validation=not validation.empty
     if train.memory_usage(deep=True).sum()+validation.memory_usage(deep=True).sum() > max_bytes:
         raise ValueError('Combined training and validation frames exceed max_bytes')
     fitted = FittedRecipe.load(preparation/'preprocessing/fitted.json')
@@ -132,6 +141,11 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
     configs = list(configs) if configs is not None else [ModelConfig(algorithm='linear'),ModelConfig(algorithm='random_forest')]
     if not configs or not all(isinstance(c,ModelConfig) for c in configs):
         raise ValueError('Supply ModelConfig candidates')
+    if not has_validation:
+        if len(configs)!=1 or experiment is not None:
+            raise ValueError('Without validation, select exactly one model; comparison/search requires validation')
+        if configs[0].params.get('early_stopping_rounds') is not None:
+            raise ValueError('early_stopping_rounds requires a validation set; remove it to train without validation')
     if resumed:
         if len(configs)!=1:
             raise ValueError('Resume exactly one neural candidate')
@@ -155,7 +169,7 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
             # Configuration, training, or export failures abort atomically; never silently omit a requested model.
             adapter = create_model(config,task_type)
             schema = infer_schema(train[features],config.categorical_columns)
-            scale = config.scale_numeric if config.scale_numeric is not None else config.algorithm in {'linear','mlp'}
+            scale = config.scale_numeric if config.scale_numeric is not None else config.algorithm in {'linear','mlp','linear_regression','ridge','lasso','elastic_net','logistic_regression','multinomial_logistic','svm','knn','voting','stacking'}
             if resumed:
                 schema = resumed['schema']['feature_schema']
                 fitted = FittedRecipe.load(Path(resume)/'preprocessing.json')
@@ -163,7 +177,7 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
             else:
                 encoder = fit_encoder(train[features],schema,scale=scale,max_features=max_features)
             x_train = encode(encoder,train[features],schema,max_bytes)
-            x_val = encode(encoder,validation[features],schema,max_bytes)
+            x_val = encode(encoder,validation[features],schema,max_bytes) if has_validation else None
             input_schema = {'raw_columns':list(fitted.input_columns),'feature_schema':schema,
                             'encoded_feature_names':encoder.get_feature_names_out().tolist(),
                             'encoded_features':int(x_train.shape[1]),'extra_raw_columns':'ignored',
@@ -172,7 +186,7 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
             origin = {'dataset_id':dataset_id,'task_id':task_id,'preparation_run':preparation_run,
                       'reset_patience':bool(reset_patience),
                       'preparation_manifest_sha256':preparation_digest,'training_run':run_id,'candidate':name,
-                      'target':target,'task_type':task_type,'selection_split':'validation'}
+                      'target':target,'task_type':task_type,'selection_split':'validation' if has_validation else None}
             latest_checkpoint = None
             save_checkpoint = None
             if config.backend in {'pytorch','tensorflow'}:
@@ -188,38 +202,51 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
                     progress({**event,'candidate':name})
             encoding_seconds=perf_counter()-candidate_started
             fit_started=perf_counter()
-            adapter.fit_validation(x_train,y_train,validation_data=(x_val,y_val),progress=on_progress,
-                checkpoint=save_checkpoint,resume=resume,reset_patience=reset_patience,max_bytes=max_bytes)
+            if has_validation or config.backend in {'pytorch','tensorflow'}:
+                adapter.fit_validation(x_train,y_train,validation_data=(x_val,y_val) if has_validation else None,progress=on_progress,
+                    checkpoint=save_checkpoint,resume=resume,reset_patience=reset_patience,max_bytes=max_bytes)
+            else:
+                adapter.max_bytes=max_bytes
+                adapter.fit(x_train,y_train)
             fit_seconds=perf_counter()-fit_started
-            probabilities = adapter.predict_proba(x_val) if task_type=='classification' else None
-            scores = evaluate_predictions(y_val,adapter.predict(x_val),task_type,probabilities=probabilities,n_classes=len(classes))
-            if scores.get(metric) is None:
+            training_prediction=adapter.predict(x_train)
+            training_scores=evaluate_predictions(y_train,training_prediction,task_type,
+                probabilities=adapter.predict_proba(x_train) if task_type=='classification' else None,n_classes=len(classes))
+            scores = evaluate_predictions(y_val,adapter.predict(x_val),task_type,
+                probabilities=adapter.predict_proba(x_val) if task_type=='classification' else None,n_classes=len(classes)) if has_validation else {}
+            if has_validation and scores.get(metric) is None:
                 raise ValueError(f'{metric} is undefined on this validation split; choose another metric')
-            record = {'candidate':name,'model':config.to_dict(),'validation':scores,
+            record = {'candidate':name,'model':config.to_dict(),'validation':scores,'training_metrics':training_scores,
+                      'selection_split':'validation' if has_validation else None,
                       'fit_seconds':fit_seconds,'encoding_seconds':encoding_seconds,
                       'is_baseline':config.backend=='sklearn' and config.algorithm=='dummy',
                       'training':getattr(adapter,'training_summary',{}),
                       'checkpoint':str(latest_checkpoint) if latest_checkpoint else None}
             leaderboard.append(record)
             detail={}
+            training_detail={}
             if task_type=='classification':
                 from .evaluation import classification_details
-                detail=classification_details(y_val,adapter.predict(x_val),classes)
+                if has_validation: detail=classification_details(y_val,adapter.predict(x_val),classes)
+                training_detail=classification_details(y_train,training_prediction,classes)
             origin['resumed_from']=str(Path(resume).resolve()) if resume else None
             input_schema['raw_dtypes']={c:str(reference[c].dtype) for c in reference}
             _write_bundle(staging/'candidates'/name,adapter,encoder,fitted,config,task_type,classes,input_schema,
-                          {'validation':scores,'validation_details':detail,'fit_seconds':fit_seconds,
+                          {'validation':scores,'validation_details':detail,'training_metrics':training_scores,
+                           'training_details':training_detail,'fit_seconds':fit_seconds,
                            'encoding_seconds':encoding_seconds,'training_rows':len(train),'validation_rows':len(validation)},
                           origin,reference,x_train[:64])
             record['total_seconds']=perf_counter()-candidate_started
             del x_train,x_val,adapter,encoder
         baseline=next((r for r in leaderboard if r['is_baseline']),None)
         for record in leaderboard:
-            record['baseline_score']=baseline['validation'][metric] if baseline else None
-            record['improvement_over_baseline']=(record['validation'][metric]-record['baseline_score'])*(1 if direction=='max' else -1) if baseline else None
-        winner = sorted(leaderboard,key=lambda r:(-r['validation'][metric] if direction=='max' else r['validation'][metric],r['candidate']))[0]['candidate']
+            record['baseline_score']=baseline['validation'][metric] if baseline and has_validation else None
+            record['improvement_over_baseline']=(record['validation'][metric]-record['baseline_score'])*(1 if direction=='max' else -1) if baseline and has_validation else None
+        winner = sorted(leaderboard,key=lambda r:(-r['validation'][metric] if direction=='max' else r['validation'][metric],r['candidate']))[0]['candidate'] if has_validation else next((r['candidate'] for r in leaderboard if not r['is_baseline']),leaderboard[0]['candidate'])
         write_json(staging/'selection.json',{'winner':winner,'metric':metric,'direction':direction,
-                                            'selection_split':'validation','test_evaluated':False,'leaderboard':leaderboard,
+                                            'selection_split':'validation' if has_validation else None,
+                                            'selection_reason':'validation score' if has_validation else 'Single requested model; no validation ranking',
+                                            'test_evaluated':False,'leaderboard':leaderboard,
                                             'label':label,'experiment':experiment,
                                             'resumed_from':str(Path(resume).resolve()) if resume else None})
         seal(staging,'training_run',{'dataset_id':dataset_id,'task_id':task_id,'preparation_run':preparation_run,

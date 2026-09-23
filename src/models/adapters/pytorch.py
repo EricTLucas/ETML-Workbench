@@ -18,9 +18,10 @@ class TorchAdapter(NeuralAdapter):
         for index,(a,b) in enumerate(zip(dims,dims[1:])):
             layers.append(torch.nn.Linear(a,b))
             if index<len(dims)-2:
-                layers.append(torch.nn.ReLU())
+                layers.append({'relu':torch.nn.ReLU,'tanh':torch.nn.Tanh,'gelu':torch.nn.GELU}[self.options['activation']]())
         self.model = torch.nn.Sequential(*layers).cpu()
-        self.optimizer = torch.optim.Adam(self.model.parameters(),lr=self.options['learning_rate'])
+        cls={'adam':torch.optim.Adam,'adamw':torch.optim.AdamW,'sgd':torch.optim.SGD,'rmsprop':torch.optim.RMSprop}[self.options['optimizer']]
+        self.optimizer = cls(self.model.parameters(),lr=self.options['learning_rate'],**({'weight_decay':0.0} if self.options['optimizer']=='adamw' else {}))
 
     def _train_batch(self,x,y):
         torch = self.torch
@@ -30,7 +31,11 @@ class TorchAdapter(NeuralAdapter):
         if self.task_type=='classification':
             loss = torch.nn.functional.cross_entropy(output,torch.as_tensor(y,dtype=torch.long))
         else:
-            loss = torch.nn.functional.mse_loss(output.reshape(-1),torch.as_tensor(y,dtype=torch.float32))
+            fn={'mse':torch.nn.functional.mse_loss,'mae':torch.nn.functional.l1_loss,'huber':torch.nn.functional.huber_loss}[self.loss_name]
+            loss = fn(output.reshape(-1),torch.as_tensor(y,dtype=torch.float32))
+        if self.options['regularizer']!='none':
+            penalty=sum(p.abs().sum() if self.options['regularizer']=='l1' else p.square().sum() for p in self.model.parameters() if p.ndim>1)
+            loss=loss+self.options['regularization_strength']*penalty
         loss.backward()
         self.optimizer.step()
 

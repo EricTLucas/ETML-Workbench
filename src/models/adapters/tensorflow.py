@@ -15,11 +15,13 @@ class TensorFlowAdapter(NeuralAdapter):
         tf = self.tf
         tf.keras.utils.set_random_seed(self.config.seed)
         with tf.device('/CPU:0'):
+            regularizer=None if self.options['regularizer']=='none' else (tf.keras.regularizers.L1 if self.options['regularizer']=='l1' else tf.keras.regularizers.L2)(self.options['regularization_strength'])
             self.model = tf.keras.Sequential([tf.keras.Input(shape=(self.architecture['inputs'],)),
-                *[tf.keras.layers.Dense(n,activation='relu') for n in self.architecture['hidden_sizes']],
-                tf.keras.layers.Dense(self.architecture['outputs'])])
-            loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True) if self.task_type=='classification' else 'mse'
-            self.model.compile(optimizer=tf.keras.optimizers.Adam(self.options['learning_rate']),loss=loss)
+                *[tf.keras.layers.Dense(n,activation=self.options['activation'],kernel_regularizer=regularizer) for n in self.architecture['hidden_sizes']],
+                tf.keras.layers.Dense(self.architecture['outputs'],kernel_regularizer=regularizer)])
+            loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True) if self.task_type=='classification' else tf.keras.losses.Huber() if self.loss_name=='huber' else self.loss_name
+            cls={'adam':tf.keras.optimizers.Adam,'adamw':tf.keras.optimizers.AdamW,'sgd':tf.keras.optimizers.SGD,'rmsprop':tf.keras.optimizers.RMSprop}[self.options['optimizer']]
+            self.model.compile(optimizer=cls(self.options['learning_rate'],**({'weight_decay':0.0} if self.options['optimizer']=='adamw' else {})),loss=loss)
 
     def _train_batch(self,x,y):
         values = y if self.task_type=='classification' else np.asarray(y,dtype=np.float32).reshape(-1,1)

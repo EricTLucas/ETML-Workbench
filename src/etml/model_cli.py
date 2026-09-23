@@ -9,6 +9,27 @@ def parser():
     root = argparse.ArgumentParser(prog='workbench models',description='Train, tune, compare, resume, predict and export')
     commands = root.add_subparsers(dest='command',required=True)
     catalog = commands.add_parser('list',help='Available models and capabilities')
+    catalog.add_argument('--task-type')
+    help_model=commands.add_parser('help',help='Describe a model, defaults and input requirements')
+    help_model.add_argument('model')
+    input_model=commands.add_parser('prepare-input',help='Snapshot image/text/series/interaction data and splits')
+    input_model.add_argument('project'); input_model.add_argument('--config',required=True)
+    input_model.add_argument('--projects-dir',default='projects')
+    input_model.add_argument('--max-rows',type=int,default=200000)
+    input_model.add_argument('--max-memory-mb',type=int,default=512)
+    special=commands.add_parser('specialized-train',help='Train an image, text, forecasting or recommendation model')
+    special.add_argument('--input',required=True); special.add_argument('--model',required=True)
+    special.add_argument('--output',required=True); special.add_argument('--params',default='{}')
+    special.add_argument('--seed',type=int,default=42); special.add_argument('--max-memory-mb',type=int,default=512)
+    explore=commands.add_parser('explore',help='Fit clusters, projection or anomalies on explicit input features')
+    explore.add_argument('input'); explore.add_argument('--model',required=True); explore.add_argument('--output',required=True)
+    explore.add_argument('--features',nargs='+',required=True); explore.add_argument('--params',default='{}')
+    explore.add_argument('--seed',type=int,default=42); explore.add_argument('--max-memory-mb',type=int,default=512)
+    explore.add_argument('--max-rows',type=int,default=200000)
+    special_predict=commands.add_parser('specialized-predict',help='Predict from a specialized or exploration bundle')
+    special_predict.add_argument('--bundle',required=True); special_predict.add_argument('--values',required=True)
+    special_export=commands.add_parser('specialized-export',help='Export a portable specialized/exploration bundle')
+    special_export.add_argument('--bundle',required=True); special_export.add_argument('--output',required=True)
     train = commands.add_parser('train',help='Compare candidates; preparation defaults to latest')
     search = commands.add_parser('search',help='Budgeted random or grid search')
     for p in (train,search):
@@ -23,6 +44,11 @@ def parser():
         p.add_argument('--learning-rate',type=float)
         p.add_argument('--patience',type=int,help='Neural validation-loss stopping patience')
         p.add_argument('--hidden-sizes',type=int,nargs='+')
+        p.add_argument('--optimizer',choices=['adam','adamw','sgd','rmsprop'])
+        p.add_argument('--regularizer',choices=['none','l1','l2'])
+        p.add_argument('--regularization-strength',type=float)
+        p.add_argument('--loss',choices=['auto','cross_entropy','mse','mae','huber'])
+        p.add_argument('--activation',choices=['relu','tanh','gelu'])
         p.add_argument('--early-stopping-rounds',type=int,help='XGBoost validation stopping patience')
         p.add_argument('--seed',type=int,default=42)
     candidates = train.add_mutually_exclusive_group()
@@ -76,7 +102,7 @@ def parser():
     for p in (train,search,resume,test):
         p.add_argument('--max-rows',type=int,default=200_000)
         p.add_argument('--max-memory-mb',type=int,default=512)
-    for p in (catalog,train,search,resume,test,runs,compare,history,checkpoints,predict,export,example,template,setup):
+    for p in (catalog,help_model,input_model,special,explore,special_predict,special_export,train,search,resume,test,runs,compare,history,checkpoints,predict,export,example,template,setup):
         p.add_argument('--workspace',default='datasets')
         p.add_argument('--json',action='store_true'); p.add_argument('--quiet',action='store_true')
     return root
@@ -90,7 +116,7 @@ def _object(value):
 
 def _configs(args):
     from models import ModelConfig
-    neural_keys = ('epochs','batch_size','learning_rate','patience','hidden_sizes')
+    neural_keys = ('epochs','batch_size','learning_rate','patience','hidden_sizes','optimizer','regularizer','regularization_strength','loss','activation')
     if getattr(args,'config',None):
         if args.params!='{}' or args.categorical or any(getattr(args,k) is not None for k in (*neural_keys,'early_stopping_rounds')):
             raise ValueError('Put model settings inside --config when using a configuration file')
@@ -108,7 +134,7 @@ def _configs(args):
         if parts[0] in {'pytorch','tensorflow'}:
             for key in neural_keys:
                 if getattr(args,key) is not None: values[key]=getattr(args,key)
-        elif parts[0]=='xgboost':
+        elif parts[0] in {'xgboost','lightgbm','catboost'}:
             if args.early_stopping_rounds is not None:
                 values['early_stopping_rounds']=args.early_stopping_rounds
             if args.learning_rate is not None:
@@ -116,9 +142,9 @@ def _configs(args):
         result.append(ModelConfig(*parts,params=values,seed=args.seed,categorical_columns=tuple(args.categorical)))
     if any(getattr(args,k) is not None for k in neural_keys if k!='learning_rate') and not any(c.backend in {'pytorch','tensorflow'} for c in result):
         raise ValueError('Epoch/batch/patience flags require a neural model')
-    if args.learning_rate is not None and not any(c.backend in {'pytorch','tensorflow','xgboost'} for c in result):
+    if args.learning_rate is not None and not any(c.backend in {'pytorch','tensorflow','xgboost','lightgbm','catboost'} for c in result):
         raise ValueError('--learning-rate requires a neural model or XGBoost')
-    if args.early_stopping_rounds is not None and not any(c.backend=='xgboost' for c in result):
+    if args.early_stopping_rounds is not None and not any(c.backend in {'xgboost','lightgbm','catboost'} for c in result):
         raise ValueError('--early-stopping-rounds requires XGBoost')
     return result
 
@@ -155,6 +181,8 @@ def _training_steps(args,result):
             steps.append((f"Continue {row['candidate']} for up to 10 more epochs",command(*parts)))
     steps.append(('Export setup instructions and replay data',command('workbench','models','setup','--bundle',result.bundle,
                   '--output',str(Path('exports')/(result.run_id+'-replay')),*common)))
+    if not result.leaderboard[0]['validation']:
+        steps=[step for step in steps if step[0]!='Compare validation scores']
     return steps
 
 
@@ -170,14 +198,48 @@ def main(argv=None):
             if event.get('checkpoint'): latest_checkpoint=event['checkpoint']
             if not args.quiet:
                 if event['stage']=='epoch':
-                    print(f"{event['candidate']} epoch {event['epoch']}: train loss {event['train_loss']:.6g}, validation loss {event['validation_loss']:.6g}",file=sys.stderr)
+                    suffix=f", validation loss {event['validation_loss']:.6g}" if 'validation_loss' in event else ''
+                    print(f"{event.get('candidate','model')} epoch {event['epoch']}: train loss {event['train_loss']:.6g}"+suffix,file=sys.stderr)
                 elif event['stage']=='training':
                     print(f"Training {event['candidate']}: {event['model']}",file=sys.stderr)
                 elif event['stage']=='boosting_complete':
                     print(f"Boosting complete: {event['boosting_rounds']} rounds; best iteration {event['best_iteration']}",file=sys.stderr)
         if args.command=='list':
-            payload = {'models':available_models()}
-            table = (['Model','Epochs','Resume','ONNX'],[[name,v['epochs'],v['resumable'],v['onnx_model_only']] for name,v in payload['models'].items()])
+            from models.catalog import CATALOG
+            payload={'models':{k:e.to_dict() for k,e in CATALOG.items() if not args.task_type or args.task_type in e.tasks}}
+            table=(['Model','Input','Tasks','Optional install'],[[k,e['modality'],', '.join(e['tasks']),e['extra'] or 'included'] for k,e in payload['models'].items()])
+        elif args.command=='help':
+            from models.catalog import describe,CATALOG
+            payload={'model':CATALOG[args.model].to_dict()}
+            table=(['Model help'],[[describe(args.model)]])
+        elif args.command=='prepare-input':
+            from data.projects import ProjectStore
+            from data.model_inputs import prepare_model_input
+            project=ProjectStore(args.projects_dir).get(args.project)
+            path=prepare_model_input(project,_object(Path(args.config).read_text(encoding='utf-8')),
+                max_rows=args.max_rows,max_bytes=args.max_memory_mb*1024**2)
+            payload={'input':str(path)}
+        elif args.command=='specialized-train':
+            from training.specialized import train_specialized
+            payload=train_specialized(args.input,args.model,args.output,params=_object(args.params),seed=args.seed,
+                max_bytes=args.max_memory_mb*1024**2,progress=progress)
+        elif args.command=='explore':
+            from training.exploration import train_exploration
+            payload=train_exploration(args.input,args.model,args.output,features=args.features,params=_object(args.params),
+                seed=args.seed,max_rows=args.max_rows,max_bytes=args.max_memory_mb*1024**2)
+        elif args.command=='specialized-predict':
+            from training.artifacts import verify_artifacts
+            from training.specialized import predict_specialized
+            from training.exploration import predict_exploration
+            kind=verify_artifacts(args.bundle)['kind']
+            payload=(predict_exploration if kind=='exploration_model' else predict_specialized)(args.bundle,_object(args.values))
+        elif args.command=='specialized-export':
+            from training.artifacts import staged_directory,verify_artifacts
+            import shutil
+            manifest=verify_artifacts(args.bundle)
+            if manifest['kind'] not in {'exploration_model','specialized_model'}: raise ValueError('Expected specialized/exploration bundle')
+            with staged_directory(args.output) as out: shutil.copytree(args.bundle,out,dirs_exist_ok=True)
+            payload={'output':str(Path(args.output).resolve())}
         elif args.command in {'train','search','resume'}:
             from training import train_models
             kwargs = {'max_rows':args.max_rows,'max_bytes':args.max_memory_mb*1024**2,'progress':progress,'label':args.label}
@@ -205,10 +267,13 @@ def main(argv=None):
                        'preparation_run':json.loads((result.directory/'manifest.json').read_text(encoding='utf-8'))['metadata']['preparation_run'],
                        'winner':result.winner,'bundle':str(result.bundle),'metric':result.metric,
                        'leaderboard':result.leaderboard,'test_used_for_selection':False}
-            metric_extra='f1_macro' if 'f1_macro' in result.leaderboard[0]['validation'] else 'mae'
-            table = (['Candidate','Model','Baseline','Validation '+result.metric,metric_extra,'Fit seconds','Improvement'],[[r['candidate'],
+            has_validation=bool(result.leaderboard[0]['validation'])
+            scope='validation' if has_validation else 'training_metrics'
+            metric_extra='f1_macro' if 'f1_macro' in result.leaderboard[0][scope] else 'mae'
+            payload['selection_split']='validation' if has_validation else None
+            table = (['Candidate','Model','Baseline',('Validation ' if has_validation else 'Training (in-sample) ')+result.metric,metric_extra,'Fit seconds','Improvement'],[[r['candidate'],
                 r['model']['backend']+':'+r['model']['algorithm'],'yes' if r['is_baseline'] else '',
-                f"{r['validation'][result.metric]:.6g}",f"{r['validation'][metric_extra]:.6g}",f"{r['fit_seconds']:.3f}",
+                f"{r[scope][result.metric]:.6g}" if r[scope].get(result.metric) is not None else 'undefined',f"{r[scope][metric_extra]:.6g}",f"{r['fit_seconds']:.3f}",
                 f"{r['improvement_over_baseline']:+.6g}" if r['improvement_over_baseline'] is not None else 'n/a'] for r in result.leaderboard])
             steps = _training_steps(args,result)
         elif args.command=='runs':

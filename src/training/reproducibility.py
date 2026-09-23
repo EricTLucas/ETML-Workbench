@@ -33,7 +33,7 @@ def source_digest():
 def requirements(config):
     from packaging.requirements import Requirement
     roots=['numpy','pandas','scipy','pyarrow','scikit-learn','skops','matplotlib','wordcloud','packaging']
-    if config.backend in {'xgboost','tensorflow','pytorch'}:
+    if config.backend in {'xgboost','lightgbm','catboost','tensorflow','pytorch'}:
         roots.append('torch' if config.backend=='pytorch' else config.backend)
     found={}
     while roots:
@@ -191,23 +191,28 @@ def replay(package,*,output=None):
         if metadata.version(name)!=expected: raise ValueError(f'Install pinned {name}=={expected} before replaying')
     train,val=pd.read_parquet(root/'data/train.parquet'),pd.read_parquet(root/'data/validation.parquet')
     schema=original.schema['feature_schema']; target=original.metadata['target']
-    x_train,x_val=encode(original.encoder,train,schema),encode(original.encoder,val,schema)
+    x_train=encode(original.encoder,train,schema)
+    x_val=encode(original.encoder,val,schema) if len(val) else None
     y_train,y_val=(_encode_target(train[target],original.classes),_encode_target(val[target],original.classes)) if original.task_type=='classification' else (train[target].to_numpy(dtype=float),val[target].to_numpy(dtype=float))
     adapter=create_model(config,original.task_type)
     resume=root/'checkpoint' if (root/'checkpoint').exists() else None
     # A resumed early-stopped run was explicitly continued by the original user.
-    adapter.fit_validation(x_train,y_train,validation_data=(x_val,y_val),resume=resume,
-                           reset_patience=original.metadata.get('reset_patience',False))
-    expected,actual=original.adapter.predict(x_val),adapter.predict(x_val)
+    if len(val) or config.backend in {'pytorch','tensorflow'}:
+        adapter.fit_validation(x_train,y_train,validation_data=(x_val,y_val) if len(val) else None,resume=resume,
+                               reset_patience=original.metadata.get('reset_patience',False))
+    else:
+        adapter.fit(x_train,y_train)
+    reference=x_val if len(val) else x_train
+    expected,actual=original.adapter.predict(reference),adapter.predict(reference)
     exact=bool(np.array_equal(expected,actual)); matches=bool(np.allclose(expected,actual,rtol=1e-5,atol=1e-6))
     difference=float(np.max(np.abs(expected-actual)))
     if original.task_type=='classification':
-        left,right=original.adapter.predict_proba(x_val),adapter.predict_proba(x_val)
+        left,right=original.adapter.predict_proba(reference),adapter.predict_proba(reference)
         exact=exact and bool(np.array_equal(left,right))
         matches=matches and bool(np.allclose(left,right,rtol=1e-5,atol=1e-6))
         difference=max(difference,float(np.max(np.abs(left-right))))
     result={'matches':matches,'exact_predictions':exact,'max_absolute_difference':difference,
-            'validation_rows':len(val),'rtol':1e-5,'atol':1e-6}
+            'validation_rows':len(val),'parity_split':'validation' if len(val) else 'train','rtol':1e-5,'atol':1e-6}
     destination=Path(output).resolve() if output else root/'retrained'
     with staged_directory(destination) as staging:
         old=verify_artifacts(bundle,'model_bundle')

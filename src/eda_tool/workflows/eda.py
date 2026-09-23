@@ -97,12 +97,17 @@ def run_eda(source, *, profile_config=None, visualizer_config=None, loader_optio
         if len(result.charts)>100: raise ValueError('Combined summary and requests exceed 100 charts')
         if export_html:
             emit('reporting','Building optional HTML gallery')
+            from ..row_views import collect_row_views
+            from ..profiler.base import SectionResult
+            profile['row_views'] = SectionResult('row_views', collect_row_views(
+                dataset, profile['summary'].data['rows'], batch_size=pc.batch_size),
+                {'method':'exact source-order windows', 'row_numbers':'one-based', 'max_rows_per_view':10})
             result.html = HtmlReport(profile,result.charts,title=title).render()
         manifest = {'run_id':uuid.uuid4().hex,'created_utc':datetime.now(timezone.utc).isoformat(),
                     'source':source_info,'profile_config':asdict(pc),'visualizer_config':asdict(vc),
                     'versions':_versions(),'title':title,
                     'source_loader_options':{str(k):str(v) for k,v in (loader_options or {}).items()},
-                    'privacy':'No row sample unless opted in. Aggregates/charts may contain original values.'}
+                    'privacy':'HTML exports include first/middle/last row windows. Random row sample saved only when requested. Aggregates/charts may contain original values.'}
         if target is not None:
             emit('saving','Saving run artifacts')
             target.parent.mkdir(parents=True,exist_ok=True)

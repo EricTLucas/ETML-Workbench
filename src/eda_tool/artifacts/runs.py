@@ -55,6 +55,8 @@ def persisted_profile(profile):
     """
     result = {}
     for key, value in profile.items():
+        if key == 'row_views':
+            continue
         data = value.data
         if key == 'interactions':
             data = {**data, 'sample': None}
@@ -73,6 +75,11 @@ def write_run(directory, profile, charts, manifest, *, save_sample=False, html=N
     manifest = {**manifest, 'format': 'workbench-eda-run', 'version': FORMAT_VERSION,
                 'profile': 'profile.json', 'sample': None, 'charts': [], 'html': None,
                 'row_previews_saved': False}
+    if 'row_views' in profile:
+        codec.dump(directory/'row_views.json', profile['row_views'])
+        files.append('row_views.json')
+        manifest['row_views'] = 'row_views.json'
+        manifest['row_previews_saved'] = True
     if save_sample:
         sample = profile.get('interactions')
         sample = sample.data.get('sample') if sample is not None else None
@@ -109,6 +116,7 @@ def load_run(directory, *, verify=True):
         raise ValueError('Unsupported saved-run format/version')
     required = [manifest['profile']]
     if manifest.get('sample'): required.append(manifest['sample'])
+    if manifest.get('row_views'): required.append(manifest['row_views'])
     for chart in manifest.get('charts', []):
         required.extend([chart['image'], chart['metadata']])
     if manifest.get('html'): required.append(manifest['html'])
@@ -123,6 +131,8 @@ def load_run(directory, *, verify=True):
     if payload.get('format') != 'eda-profile' or payload.get('version') != FORMAT_VERSION:
         raise ValueError('Unsupported profile format/version')
     profile = payload['sections']
+    if manifest.get('row_views'):
+        profile['row_views'] = codec.load(inside(directory, manifest['row_views']))
     if manifest.get('sample'):
         sample = pd.read_parquet(inside(directory, manifest['sample']))
         if len(sample) != manifest.get('sample_rows'):

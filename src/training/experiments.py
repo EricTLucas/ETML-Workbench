@@ -57,6 +57,9 @@ def compare_runs(workspace,dataset_id,task_id,*,preparation_run=None,metric=None
     chosen = [r for r in runs if r['preparation_run']==preparation_run]
     if not chosen:
         raise ValueError('No training runs for this preparation')
+    if not any(r.get('selection_split')=='validation' for r in chosen):
+        raise ValueError('No validation scores are available; training-only runs are not ranked')
+    chosen=[r for r in chosen if r.get('selection_split')=='validation']
     if len({r['preparation_manifest_sha256'] for r in chosen})!=1:
         raise ValueError('Preparation changed between runs; these scores are not comparable')
     ws = workspace if isinstance(workspace,DatasetWorkspace) else DatasetWorkspace(workspace)

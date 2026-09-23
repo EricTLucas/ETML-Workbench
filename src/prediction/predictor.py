@@ -30,6 +30,8 @@ class Predictor:
             raise ValueError('scikit-learn version differs from the bundle; use its recorded environment')
         settings = read('model_config.json')
         config = ModelConfig(**settings['config'])
+        if config.backend in {'lightgbm','catboost'} and saved_environment.get(config.backend)!=version(config.backend):
+            raise ValueError(f'{config.backend} version differs from bundle; use its recorded environment')
         if config.backend in {'pytorch','tensorflow'}:
             require_files(manifest,['architecture.json'])
             package = 'torch' if config.backend=='pytorch' else 'tensorflow'
