@@ -122,6 +122,15 @@ class ModelWebTests(unittest.TestCase):
         self.assertIn('Ranked by training accuracy',html)
         self.assertEqual(report['best_model'],'model1')
 
+    def test_visualization_all_data_combines_available_splits(self):
+        did=self.split();self.train(did)
+        result=self.wait(self.post('projects/demo/models/model1/visualizations',{
+            'columns':['sepal length (cm)'],'split':'all'}))
+        self.assertEqual(result['source_rows'],150)
+        self.assertEqual(result['plotted_rows'],150)
+        self.assertEqual(result['split'],'all')
+        self.assertIn('All data',result['title'])
+
     def test_catalog_and_default_name(self):
         overview=self.get('projects/demo/models')
         self.assertEqual(overview['default_name'],'model1')

@@ -34,14 +34,16 @@ def create_plot(project, name, payload):
     if not isinstance(columns,list) or not 1<=len(columns)<=2 or len(set(columns))!=len(columns) or any(c not in predictor.schema['raw_columns'] for c in columns):
         raise ValueError('Choose one or two distinct feature columns.')
     split=payload.get('split','test');splits=inspection.splits()
-    if split not in splits:raise ValueError('Choose an available saved split.')
+    if split != 'all' and split not in splits:raise ValueError('Choose an available saved split.')
+    sources=[splits[k]['path'] for k in ('train','validation','test') if k in splits] if split=='all' else [splits[split]['path']]
     # Smallest random priorities form a uniform sample without retaining the split.
     rng=np.random.default_rng(42);sample=None;priorities=np.array([]);total=0
-    for batch in open_dataset(splits[split]['path']).iter_batches(batch_size=10000):
-        total+=len(batch);keys=rng.random(len(batch))
-        combined=pd.concat([sample,batch],ignore_index=True) if sample is not None else batch.reset_index(drop=True)
-        keys=np.concatenate([priorities,keys]);keep=np.argsort(keys,kind='stable')[:2000]
-        sample=combined.iloc[keep].reset_index(drop=True);priorities=keys[keep]
+    for source in sources:
+        for batch in open_dataset(source).iter_batches(batch_size=10000):
+            total+=len(batch);keys=rng.random(len(batch))
+            combined=pd.concat([sample,batch],ignore_index=True) if sample is not None else batch.reset_index(drop=True)
+            keys=np.concatenate([priorities,keys]);keep=np.argsort(keys,kind='stable')[:2000]
+            sample=combined.iloc[keep].reset_index(drop=True);priorities=keys[keep]
     if sample is None or sample.empty:raise ValueError('No rows are available to visualize.')
     predictions=predictor.predict(sample,probabilities=False)
     target=inspection.manifest['metadata']['target']
@@ -88,7 +90,7 @@ def create_plot(project, name, payload):
         ax.tick_params(colors='#ddd6ee');ax.grid(alpha=.12,color='#c084fc')
         for spine in ax.spines.values():spine.set_color('#51465e')
         ax.legend(facecolor='#201929',labelcolor='#eee8f7',fontsize=8,loc='best',ncol=2 if len(classes)>6 else 1)
-    title=name+' · '+split+' · '+' vs '.join(columns)
+    title=name+' · '+('All data' if split=='all' else split)+' · '+' vs '.join(columns)
     figure.suptitle(title,color='#eee8f7')
     figure.tight_layout(rect=(0,0,1,.95))
     plot_id='plot-'+uuid.uuid4().hex;root=project.directory/'visualizations'/plot_id;root.mkdir(parents=True)
@@ -96,7 +98,7 @@ def create_plot(project, name, payload):
     record={'id':plot_id,'model':name,'title':title,'columns':columns,'split':split,
             'reference':inspection.record['input'],'source_rows':total,'sampled_rows':len(sample),
             'plotted_rows':int(valid.sum()),'omitted_rows':int((~valid).sum()),'unknown_labels':unknown,
-            'note':'Uniform sample (seed 42), up to 2,000 rows. Both panels use the same rows and class colors. '+('Vertical jitter is for visibility only.' if len(columns)==1 else ''),
+            'note':('All available saved train, validation and test rows combined. ' if split=='all' else '')+'Uniform sample (seed 42), up to 2,000 rows. Both panels use the same rows and class colors. '+('Vertical jitter is for visibility only.' if len(columns)==1 else ''),
             'include_summary':False}
     write_json(root/'plot.json',record)
     return dict(record,image='data:image/png;base64,'+base64.b64encode((root/'plot.png').read_bytes()).decode('ascii'))
