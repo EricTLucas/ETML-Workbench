@@ -239,7 +239,7 @@ def run(project, args, *, dataset_id=None, show_saved=True):
                 if not _recipe(service,choose,ask):
                     return 0
                 continue
-            print('\nBefore (up to 5 rows; original row index):')
+            print('\nChanged source rows (up to 5; original row index):' if before.attrs.get('preview',{}).get('changed') else '\nNo changed rows found; first source rows for reference:')
             print(before.to_string(max_cols=8,max_colwidth=24,line_width=120))
             print('\nAfter (same input rows; removed rows are absent):')
             print(after.to_string(max_cols=8,max_colwidth=24,line_width=120))

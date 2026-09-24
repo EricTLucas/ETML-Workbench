@@ -129,8 +129,8 @@ class DataExperienceTests(unittest.TestCase):
     def test_results_example_and_setup_metadata(self):
         _,result=self.trained()
         baseline=result.leaderboard[0]
-        self.assertTrue(baseline['is_baseline'])
-        self.assertEqual(baseline['improvement_over_baseline'],0.)
+        self.assertFalse(baseline['is_baseline'])
+        self.assertIsNone(baseline['improvement_over_baseline'])
         for record in result.leaderboard:
             self.assertGreaterEqual(record['fit_seconds'],0.)
             self.assertIn('f1_weighted',record['validation'])
@@ -172,25 +172,6 @@ class DataExperienceTests(unittest.TestCase):
         call(['models','input-template','--dataset','demo','--task','t'])
         call(['models','setup','--dataset','demo','--task','t','--output',str(self.root/'setup')])
 
-    @unittest.skipUnless(importlib.util.find_spec('streamlit'),'ui extra')
-    def test_ui_upload_slots_and_single_prediction(self):
-        from streamlit.testing.v1 import AppTest
-        import etml.app
-        at=AppTest.from_file(etml.app.__file__,default_timeout=30).run()
-        self.assertFalse(at.exception)
-        self.assertEqual(len(at.file_uploader),3)
-        _,result=self.trained()
-        at.sidebar.text_input(key='workspace').set_value(str(self.ws.root)).run()
-        at.sidebar.radio(key='page').set_value('Predict one').run()
-        self.assertFalse(at.exception)
-        frame=pd.read_parquet(self.ws.get('demo').raw_files[0])
-        for widget in at.text_input:
-            if widget.label in frame.columns: widget.set_value(str(frame[widget.label].iloc[0]))
-        next(button for button in at.button if button.label=='Predict example').click().run()
-        self.assertFalse(at.exception)
-        self.assertFalse(at.error)
-        self.assertEqual(at.metric[0].label,'Prediction')
-
     @unittest.skipUnless(importlib.util.find_spec('torch'),'pytorch extra')
     def test_resumed_neural_reproduction(self):
         from training import resume_training
@@ -198,7 +179,7 @@ class DataExperienceTests(unittest.TestCase):
         prep=prepare_task(self.ws,'demo',TaskConfig('t','target','classification'))
         first=train_models(self.ws,'demo','t',prep.run_id,
             configs=[ModelConfig('pytorch','mlp',{'epochs':1,'hidden_sizes':[4],'batch_size':32,'patience':None})])
-        second=resume_training(self.ws,first.leaderboard[1]['checkpoint'],epochs=2)
+        second=resume_training(self.ws,first.leaderboard[0]['checkpoint'],epochs=2)
         package=export_reproduction(second.bundle,self.root/'replay-neural',workspace=self.ws)
         self.assertTrue((package/'checkpoint/checkpoint.pt').exists())
         self.assertTrue(replay(package)['matches'])

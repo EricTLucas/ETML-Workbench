@@ -32,7 +32,7 @@ def parser():
     groups.add_parser('projects', help='List saved projects', add_help=False)
     for name in ('library','sklearn','huggingface','openml'):
         groups.add_parser(name, help='Dataset library instructions', add_help=False)
-    groups.add_parser('ui',help='Open the local upload and prediction interface',add_help=False)
+    groups.add_parser('ui',help='Open the project data workbench',add_help=False)
     groups.add_parser('models', help='Training, prediction and model export', add_help=False)
     groups.add_parser('tasks', help='Prediction tasks and train/validation/test preparation', add_help=False)
     groups.add_parser('eda', help='Existing EDA analyze, plot, charts and report commands', add_help=False)

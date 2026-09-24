@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eda_tool"
-version = "0.12.0"
+version = "0.17.0"
 description = "ETML Workbench: EDA, preprocessing, model experiments and prediction"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,7 +32,8 @@ onnx = ["skl2onnx>=1.17", "onnxruntime>=1.18"]
 pytorch = ["torch>=2.6"]
 tensorflow = ["tensorflow>=2.18"]
 huggingface = ["datasets>=4.0"]
-ui = ["streamlit>=1.40"]
+ui = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.18"]
+test-ui = ["httpx>=0.27"]
 
 [project.scripts]
 workbench = "etml.cli:main"
@@ -44,3 +45,6 @@ include = ["etml*", "eda_tool*", "data", "data.*", "preprocessing", "preprocessi
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+
+[tool.setuptools.package-data]
+"etml.web" = ["static/*.html", "static/*.css", "static/*.js"]

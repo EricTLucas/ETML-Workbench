@@ -36,5 +36,5 @@ def search_models(workspace,dataset_id,task_id,preparation_run,*,base,space,meth
     from .runner import train_models
     configs = search_configs(base,space,method=method,trials=trials,seed=seed,max_trials=max_trials)
     experiment = {'method':method,'seed':seed,'space':space,'trials':len(configs),
-                  'baseline_added_automatically':True,'selection_split':'validation'}
+                  'baseline_added_automatically':False,'selection_split':'validation'}
     return train_models(workspace,dataset_id,task_id,preparation_run,configs=configs,experiment=experiment,**kwargs)

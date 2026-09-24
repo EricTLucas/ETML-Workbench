@@ -153,8 +153,6 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
         original['params'].pop('epochs',None); requested['params'].pop('epochs',None)
         if original!=requested or resumed['classes']!=classes:
             raise ValueError('Checkpoint configuration/labels changed; only total epochs may change')
-    if not resumed and not any(c.backend=='sklearn' and c.algorithm=='dummy' for c in configs):
-        configs.insert(0,ModelConfig(algorithm='dummy'))
     run_id = 'train-'+uuid.uuid4().hex
     destination = resolve_inside(dataset.directory,f'tasks/{task_id}/training/{run_id}')
     reference = _reference_rows(preparation,fitted.input_columns)

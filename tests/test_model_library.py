@@ -269,7 +269,7 @@ class LibraryTests(unittest.TestCase):
             if importlib.util.find_spec(backend):
                 configs.append(ModelConfig(backend,'boosted_trees',params={'iterations' if backend=='catboost' else 'n_estimators':5}))
         result=train_models(self.project.workspace,'data','t',prep.run_id,configs=configs)
-        self.assertEqual(len(result.leaderboard),len(configs)+1)
+        self.assertEqual(len(result.leaderboard),len(configs))
         for candidate in result.leaderboard:
             bundle=result.directory/'candidates'/candidate['candidate']
             self.assertEqual(len(Predictor.load(bundle).predict(frame.iloc[:2])),2)

@@ -97,11 +97,57 @@ class ProjectPreparation:
                     yield frame.loc[:,list(features)]
         fitted = fit_batches(factory,features,recipe,batch_size=self.batch_size,
                             fit_label='Exploration only: source/training-upload features before final split')
-        with batches(lambda:dataset.iter_batches(batch_size=5)) as iterator:
-            first = next(iterator,pd.DataFrame(columns=list(self.schema()))).head(5)
-        before = first.loc[:,list(features)].copy()
-        after = fitted.apply(before)
-        # Original input indexes remain visible when a recipe removes rows.
+        # Search in bounded batches; keep at most five changed source rows.
+        # Source ordinals must remain global even when a loader resets indexes.
+        before_parts, after_parts = [], []
+        first_before = first_after = None
+        offset = found = 0
+        type_columns = {c for step in recipe.active_steps if step.operation == 'convert_type'
+                        for c in step.columns}
+        type_changes = {}
+        with batches(lambda:dataset.iter_batches(batch_size=self.batch_size)) as iterator:
+            for frame in iterator:
+                before = frame.loc[:,list(features)].copy()
+                before.index = range(offset, offset+len(before))
+                offset += len(before)
+                after = fitted.apply(before)
+                if first_before is None:
+                    first_before = before.head(5).copy()
+                    first_after = after.loc[after.index.intersection(first_before.index)].copy()
+                kept = before.index.intersection(after.index)
+                changed = pd.Series(~before.index.isin(after.index), index=before.index)
+                if list(before.columns) != list(after.columns):
+                    changed[:] = True
+                elif len(kept):
+                    left, right = before.loc[kept], after.loc[kept]
+                    equal = left.astype(object).eq(right.astype(object)).fillna(False)
+                    equal |= left.isna() & right.isna()
+                    changed.loc[kept] = ~equal.all(axis=1)
+                    # Explicit type conversions are changes even if values compare equal.
+                    for column in type_columns.intersection(before.columns):
+                        if before[column].dtype != after[column].dtype:
+                            changed.loc[kept] = True
+                            type_changes[column] = {'before':str(before[column].dtype),
+                                                    'after':str(after[column].dtype)}
+                selected = changed[changed].index[:5-found]
+                if len(selected):
+                    before_parts.append(before.loc[selected].copy())
+                    after_parts.append(after.loc[after.index.intersection(selected)].copy())
+                    found += len(selected)
+                if found == 5:
+                    break
+        if first_before is None:
+            first_before = pd.DataFrame(columns=list(features))
+            first_after = fitted.apply(first_before)
+        before = pd.concat(before_parts) if found else first_before
+        after = pd.concat(after_parts) if found else first_after
+        before.attrs['preview'] = {
+            'changed': bool(found), 'rows_examined': offset,
+            'removed_rows': [int(i)+1 for i in before.index.difference(after.index)],
+            'type_changes': type_changes,
+            'removed_columns': [c for c in before.columns if c not in after.columns],
+            'added_columns': [c for c in after.columns if c not in before.columns],
+        }
         return fitted, before, after
 
     def save_processed(self, fitted):

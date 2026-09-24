@@ -46,7 +46,7 @@ class IterativeTests(unittest.TestCase):
         self.assertEqual(len({json.dumps(c.params,sort_keys=True) for c in a}),4)
         with self.assertRaises(ValueError): search_configs(base,space,method='grid',max_trials=3)
         result=search_models(self.ws,'demo','t',self.prep.run_id,base=base,space=space,trials=2,label='first')
-        self.assertEqual(len(result.leaderboard),3)
+        self.assertEqual(len(result.leaderboard),2)
         metadata=json.loads((result.directory/'selection.json').read_text())
         self.assertEqual(metadata['experiment']['trials'],2)
         self.assertFalse(metadata['test_evaluated'])
@@ -92,7 +92,7 @@ class IterativeTests(unittest.TestCase):
         space.write_text(json.dumps({'n_estimators':[3,5],'max_depth':[2]}))
         code,result,error=self.cli('models','search','demo','t','--space',str(space),'--method','grid')
         self.assertEqual(code,0,error)
-        self.assertEqual(len(result['leaderboard']),3)
+        self.assertEqual(len(result['leaderboard']),2)
 
     @unittest.skipUnless(importlib.util.find_spec('xgboost'),'xgboost extra')
     def test_xgboost_validation_stopping_and_history(self):
@@ -105,7 +105,7 @@ class IterativeTests(unittest.TestCase):
         self.assertIsNotNone(model.training_summary['best_iteration'])
         result=train_models(self.ws,'demo','t',self.prep.run_id,configs=[config])
         from training.history import read_history,plot_history
-        payload=read_history(resolve_run(self.ws,'demo','t',result.run_id),'candidate-001')
+        payload=read_history(resolve_run(self.ws,'demo','t',result.run_id),'candidate-000')
         self.assertTrue(payload['rows'])
         self.assertIn('validation_logloss',payload['rows'][0])
         self.assertTrue(plot_history(payload,self.root/'curve.png').exists())
@@ -114,18 +114,18 @@ class IterativeTests(unittest.TestCase):
     def neural_resume(self,backend):
         config=ModelConfig(backend,'mlp',{'epochs':2,'hidden_sizes':[4],'batch_size':16,'patience':None})
         result=train_models(self.ws,'demo','t',self.prep.run_id,configs=[config])
-        checkpoint=result.leaderboard[1]['checkpoint']
+        checkpoint=result.leaderboard[0]['checkpoint']
         self.assertEqual(load_checkpoint(checkpoint)['config']['backend'],backend)
         with patch('training.runner.fit_encoder',side_effect=AssertionError('must reuse checkpoint encoder')):
             resumed=resume_training(self.ws,checkpoint,epochs=4)
         full=train_models(self.ws,'demo','t',self.prep.run_id,configs=[replace(config,params={**config.params,'epochs':4})])
         actual=Predictor.load(resumed.bundle).predict(self.frame)
-        expected=Predictor.load(full.directory/'candidates/candidate-001').predict(self.frame)
+        expected=Predictor.load(full.directory/'candidates/candidate-000').predict(self.frame)
         pd.testing.assert_frame_equal(actual,expected,check_exact=False,rtol=1e-5,atol=1e-6)
         self.assertEqual(resumed.leaderboard[0]['training']['epoch'],4)
         history=json.loads((resumed.bundle/'history.json').read_text())['history']
         self.assertEqual([r['epoch'] for r in history],[1,2,3,4])
-        full_history=json.loads((full.directory/'candidates/candidate-001/history.json').read_text())['history']
+        full_history=json.loads((full.directory/'candidates/candidate-000/history.json').read_text())['history']
         np.testing.assert_allclose([r['train_loss'] for r in history],[r['train_loss'] for r in full_history],rtol=1e-6,atol=1e-7)
         np.testing.assert_allclose([r['validation_loss'] for r in history],[r['validation_loss'] for r in full_history],rtol=1e-6,atol=1e-7)
         exported=export_bundle(resumed.bundle,self.root/'portable')
@@ -163,14 +163,14 @@ class IterativeTests(unittest.TestCase):
     def test_patience_best_weights_and_explicit_reset(self):
         config=ModelConfig('pytorch','mlp',{'epochs':8,'hidden_sizes':[4],'batch_size':16,'patience':1,'min_delta':1e9})
         result=train_models(self.ws,'demo','t',self.prep.run_id,configs=[config])
-        row=result.leaderboard[1]
+        row=result.leaderboard[0]
         self.assertEqual(row['training']['epoch'],2)
         self.assertEqual(row['training']['best_epoch'],1)
         self.assertTrue(row['training']['stopped_early'])
         with self.assertRaises(ValueError): resume_training(self.ws,row['checkpoint'],epochs=4)
         resumed=resume_training(self.ws,row['checkpoint'],epochs=4,reset_patience=True)
         self.assertEqual(resumed.leaderboard[0]['training']['epoch'],3)
-        pd.testing.assert_frame_equal(Predictor.load(result.directory/'candidates/candidate-001').predict(self.frame),
+        pd.testing.assert_frame_equal(Predictor.load(result.directory/'candidates/candidate-000').predict(self.frame),
                                       Predictor.load(resumed.bundle).predict(self.frame))
 
     @unittest.skipUnless(importlib.util.find_spec('torch'),'pytorch extra')
@@ -179,16 +179,16 @@ class IterativeTests(unittest.TestCase):
         prep=prepare_task(self.ws,'demo',TaskConfig('reg','x','regression'))
         config=ModelConfig('pytorch','mlp',{'epochs':2,'hidden_sizes':[4]})
         result=train_models(self.ws,'demo','reg',prep.run_id,configs=[config])
-        self.assertTrue(np.isfinite(Predictor.load(result.directory/'candidates/candidate-001').predict(self.frame).prediction.astype(float)).all())
+        self.assertTrue(np.isfinite(Predictor.load(result.directory/'candidates/candidate-000').predict(self.frame).prediction.astype(float)).all())
         with self.assertRaises(ValueError):
-            train_models(self.ws,'demo','t',self.prep.run_id,configs=[config],resume=result.leaderboard[1]['checkpoint'])
+            train_models(self.ws,'demo','t',self.prep.run_id,configs=[config],resume=result.leaderboard[0]['checkpoint'])
 
     @unittest.skipUnless(importlib.util.find_spec('torch'),'pytorch extra')
     def test_neural_cli_resume_and_plot(self):
         code,result,error=self.cli('models','train','demo','t','--model','pytorch:mlp',
             '--epochs','2','--batch-size','16','--hidden-sizes','4','--learning-rate','0.002')
         self.assertEqual(code,0,error)
-        row=result['leaderboard'][1]
+        row=result['leaderboard'][0]
         code,resumed,error=self.cli('models','resume',row['checkpoint'],'--epochs','3')
         self.assertEqual(code,0,error)
         self.assertEqual(resumed['leaderboard'][0]['training']['epoch'],3)
@@ -203,7 +203,7 @@ class IterativeTests(unittest.TestCase):
         prep=prepare_task(self.ws,'demo',TaskConfig('reg','x','regression'))
         result=train_models(self.ws,'demo','reg',prep.run_id,
             configs=[ModelConfig('tensorflow','mlp',{'epochs':2,'hidden_sizes':[4]})])
-        values=Predictor.load(result.directory/'candidates/candidate-001').predict(self.frame).prediction.astype(float)
+        values=Predictor.load(result.directory/'candidates/candidate-000').predict(self.frame).prediction.astype(float)
         self.assertTrue(np.isfinite(values).all())
 
 

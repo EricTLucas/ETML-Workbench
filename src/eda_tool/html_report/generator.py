@@ -80,7 +80,12 @@ class HtmlReport:
             unique = _format(p.get('num_unique'))
             if p.get('num_unique') is None and p.get('unique_lower_bound') is not None:
                 unique = f"At least {_format(p['unique_lower_bound'])}"
-            cells = [_text(name), _text(p.get('type','unknown')), _format(p.get('pct_missing'),True),
+            missing = _format(p.get('pct_missing'),True)
+            if (p.get('pct_missing') or 0) > 0:
+                missing = '<span class="quality-alert">'+missing+'</span>'
+            if summary.get('rows',0) > 0 and p.get('num_unique') == summary['rows']:
+                unique = '<span class="quality-alert">'+unique+'</span>'
+            cells = [_text(name), _text(p.get('type','unknown')), missing,
                      unique, _format(p.get('mean')), _format(p.get('std'))]
             rows.append('<tr>'+''.join(f'<td>{c}</td>' for c in cells)+'</tr>')
         table = ''.join(rows) or '<tr><td colspan="6">No columns available</td></tr>'
@@ -109,6 +114,7 @@ section{{margin:32px 0}}.stats{{display:grid;grid-template-columns:repeat(auto-f
 footer{{border-top:1px solid var(--line);padding-top:18px;color:var(--muted);font-size:12px}}@media(max-width:760px){{.gallery{{grid-template-columns:1fr}}main{{padding:24px 14px}}}}
 .row-viewer{{background:var(--surface);padding:22px;border:1px solid var(--line);border-radius:14px}}.row-tabs>input{{position:absolute;opacity:0;width:1px;height:1px}}.row-tabs>label{{display:inline-block;cursor:pointer;border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin:0 8px 16px 0;color:var(--muted)}}.row-tabs>input:checked+label{{background:var(--accent);color:var(--bg);border-color:var(--accent)}}.row-tabs>input:focus-visible+label{{outline:2px solid var(--text);outline-offset:3px}}.row-panel{{display:none;max-height:480px}}#rows-first:checked~.rows-first,#rows-middle:checked~.rows-middle,#rows-last:checked~.rows-last{{display:block}}.row-panel th{{position:sticky;top:0;background:var(--surface)}}.row-panel td{{min-width:100px;white-space:pre-wrap}}
 @media print{{figure{{break-inside:avoid}}main{{padding:0}}.gallery{{display:block}}figure{{margin-bottom:20px}}}}
+.quality-alert{{color:#ff737f;font-weight:700}}
 </style></head><body><main><header><div class="eyebrow">ETML WORKBENCH EDA</div><h1>{_text(self.title)}</h1>
 <p class="caption">ETML report · full-data aggregates and sampled views are labeled separately.</p></header>
 <dl class="stats"><div class="stat"><dt>Rows</dt><dd>{_format(summary.get('rows'))}</dd></div>

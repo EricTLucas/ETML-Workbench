@@ -282,27 +282,45 @@ class Visualizer:
 
     def summary(self, *, columns=None, output_dir=None):
         """Small automatic report; never generates all pairs or the full catalog."""
-        requests = [('missing_bar', {})]
-        if self.data is not None:
-            requests.append(('missing_matrix', {}))
-        corr, _ = section(self.results, 'correlations')
+        requests = []
+        summary, _ = section(self.results, 'summary')
+        # Population aggregates take precedence over a potentially clean sample.
+        missing = summary.get('percent_missing_cells')
+        if missing is None:
+            missing = any(p.get('pct_missing', 0) > 0 for p in self.columns.values()) if self.columns else (self.data is not None and self.data.isna().any().any())
+        if missing:
+            requests.append(('missing_bar', {}))
+            if self.data is not None: requests.append(('missing_matrix', {}))
+        corr, meta = section(self.results, 'correlations')
         if isinstance(corr, pd.DataFrame) and not corr.empty:
             requests.append(('association', {}))
-        names = list(columns) if columns is not None else list(self.columns or ({} if self.data is None else dict.fromkeys(self.data.columns)))
         numeric = self.numeric_columns()
+        if self.data is not None:
+            pairs = [p for p in meta.get('pairs', []) if p.get('status') == 'ok'
+                     and p.get('value') is not None and np.isfinite(p['value'])
+                     and all(c in self.data for c in p['columns'])]
+            pairs.sort(key=lambda p: -abs(p['value']))
+            for pair in pairs[:3]:
+                x, y = pair['columns']
+                title = f"{x} vs {y} · {pair['method']} = {pair['value']:.3f}"
+                if x in numeric and y in numeric:
+                    requests.append(('scatter', {'x':x, 'y':y, 'title':title}))
+                elif x not in numeric and y not in numeric:
+                    requests.append(('category_heatmap', {'x':x, 'y':y, 'title':title}))
+                else:
+                    num, cat = (x,y) if x in numeric else (y,x)
+                    requests.append(('box', {'x':num, 'group':cat, 'title':title}))
+        names = list(columns) if columns is not None else list(self.columns or ({} if self.data is None else dict.fromkeys(self.data.columns)))
         for c in names:
-            if c in numeric:
-                requests.append(('histogram', {'x': c}))
+            if c in numeric: requests.append(('histogram', {'x':c}))
             else:
                 role = self.columns.get(c, {}).get('type', self._frame_roles.get(c))
-                requests.append(('wordcloud' if role == 'text' else 'pie' if role == 'category' else 'bar', {'x': c}))
-        if len(numeric) > 1:
-            requests.insert(3, ('scatter', {'x': numeric[0], 'y': numeric[1]}))
+                requests.append(('wordcloud' if role == 'text' else 'pie' if role == 'category' else 'bar', {'x':c}))
         charts = []
         for kind, kwargs in requests[:self.config.max_auto_charts]:
             chart = self.plot(kind, **kwargs)
             if output_dir:
-                chart.save(Path(output_dir)/(safe_stem(kind+'_'+str(kwargs.get('x', 'overview')))+'.png'))
+                chart.save(Path(output_dir)/(safe_stem(kind+'_'+str(kwargs.get('x', 'overview'))+'_'+str(kwargs.get('y',kwargs.get('group',''))))+'.png'))
             charts.append(chart)
         return charts
 

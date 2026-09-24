@@ -37,6 +37,29 @@ class ProjectPreparationTests(unittest.TestCase):
         self.service.configure('target','regression',excluded=['id'])
         self.service.save_recipe(Recipe((Step('fill_missing',('x',),{'strategy':'mean'}).approve(),)))
 
+    def test_preview_finds_changes_in_later_batches(self):
+        self.frame['x'] = np.arange(60, dtype=float)
+        indexes = [12, 21, 34, 44, 52, 58]
+        self.frame.loc[indexes, 'x'] = np.nan
+        source = self.root/'later.csv'
+        self.frame.to_csv(source,index=False)
+        self.project.workspace.import_files(source,dataset_id='later')
+        self.service = ProjectPreparation(self.project,dataset_id='later',batch_size=7)
+        self.configure_recipe()
+        _, before, after = self.service.fit_preview()
+        self.assertEqual(list(before.index), indexes[:5])
+        self.assertTrue(before.x.isna().all())
+        self.assertFalse(after.x.isna().any())
+        self.assertTrue(before.attrs['preview']['changed'])
+
+    def test_unchanged_preview_is_explicit(self):
+        self.service.configure('target','regression',excluded=['id'])
+        self.service.save_recipe(Recipe(()))
+        _, before, after = self.service.fit_preview()
+        self.assertFalse(before.attrs['preview']['changed'])
+        self.assertEqual(before.attrs['preview']['rows_examined'],60)
+        pd.testing.assert_frame_equal(before,after)
+
     def test_exact_windows_cross_batch_boundaries(self):
         for total in (0,1,9,10,11,19,20,101):
             frame = pd.DataFrame({'value':range(total)})
@@ -76,7 +99,7 @@ class ProjectPreparationTests(unittest.TestCase):
     def test_processed_copy_and_split_refit_on_training_only(self):
         self.configure_recipe()
         fitted,before,after = self.service.fit_preview()
-        self.assertEqual(len(before),5)
+        self.assertEqual(len(before),1)
         self.assertEqual(after.iloc[0].x, self.frame.x.mean())
         processed = self.service.save_processed(fitted)
         path = self.dataset.directory/processed['path']/'data/part-00000.parquet'
@@ -106,8 +129,8 @@ class ProjectPreparationTests(unittest.TestCase):
         self.service.configure('target','regression')
         self.service.save_recipe(Recipe((Step('drop_missing',('x',)).approve(),)))
         _,before,after = self.service.fit_preview()
-        self.assertEqual(list(before.index),[0,1,2,3,4])
-        self.assertEqual(list(after.index),[1,2,3,4])
+        self.assertEqual(list(before.index),[0])
+        self.assertEqual(list(after.index),[])
 
     def test_presplit_inspection_excludes_test_and_split_preserves_it(self):
         test = self.root/'test.csv'
@@ -153,7 +176,7 @@ class ProjectPreparationTests(unittest.TestCase):
               patch('builtins.input',side_effect=answers), contextlib.redirect_stdout(output)):
             code = main(['demo','--continue'])
         self.assertEqual(code,0,output.getvalue())
-        self.assertIn('Before (up to 5 rows',output.getvalue())
+        self.assertIn('No changed rows found; first source rows for reference:',output.getvalue())
         self.assertIn('totaling 100',output.getvalue())
         state = self.service.state()
         self.assertEqual(state['split']['config']['train'],.8)

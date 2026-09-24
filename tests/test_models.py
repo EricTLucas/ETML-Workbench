@@ -47,9 +47,14 @@ class ModelTests(unittest.TestCase):
         return train_models(self.ws,'demo','t',prep.run_id,
                             configs=configs or [ModelConfig(algorithm='linear')])
 
+    def test_dummy_is_only_trained_when_requested(self):
+        result = self.train(configs=[ModelConfig(algorithm='dummy')])
+        self.assertEqual(len(result.leaderboard),1)
+        self.assertTrue(result.leaderboard[0]['is_baseline'])
+
     def test_classification_roundtrip_export_and_fresh_process(self):
         result = self.train()
-        self.assertEqual(len(result.leaderboard),2)
+        self.assertEqual(len(result.leaderboard),1)
         predictor = Predictor.load(result.bundle)
         self.assertNotIn('target',predictor.schema['raw_columns'])
         expected = predictor.predict(self.frame)
@@ -157,7 +162,7 @@ class ModelTests(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec('xgboost'),'optional xgboost extra')
     def test_xgboost_bundle(self):
         result = self.train(configs=[ModelConfig('xgboost','boosted_trees',{'n_estimators':5})])
-        bundle = result.directory/'candidates/candidate-001'
+        bundle = result.directory/'candidates/candidate-000'
         self.assertTrue((bundle/'model.ubj').exists())
         self.assertEqual(len(Predictor.load(bundle).predict(self.frame)),100)
 
@@ -165,7 +170,7 @@ class ModelTests(unittest.TestCase):
                          'optional onnx extra')
     def test_onnx_parity(self):
         result = self.train()
-        bundle = result.directory/'candidates/candidate-001'
+        bundle = result.directory/'candidates/candidate-000'
         exported = export_onnx(bundle,self.root/'onnx',sample_data=self.frame)
         self.assertTrue(json.loads((exported/'parity.json').read_text())['verified'])
         self.assertFalse(json.loads((exported/'manifest.json').read_text())['metadata']['preprocessing_included'])
@@ -174,7 +179,7 @@ class ModelTests(unittest.TestCase):
                          'optional onnx extra')
     def test_forest_regression_onnx(self):
         result = self.train(regression=True,configs=[ModelConfig(algorithm='random_forest',params={'n_estimators':5})])
-        bundle = result.directory/'candidates/candidate-001'
+        bundle = result.directory/'candidates/candidate-000'
         exported = export_onnx(bundle,self.root/'onnx',sample_data=self.frame)
         self.assertTrue((exported/'model.onnx').exists())
 
