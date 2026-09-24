@@ -17,13 +17,13 @@ Import and preserve raw data
 
 The CLI is `workbench`. An optional local browser interface is available with `workbench ui`. Python packages remain independently importable for integrations.
 
-This README describes the implemented 0.17.0 update, including the browser Models section. It assumes those files have been merged into the repository, including its `pyproject.toml`.
+This README describes the implemented 0.18.0 update, including the browser Models section. It assumes those files have been merged into the repository, including its `pyproject.toml`.
 
-Saved-model inspection now includes **Create a new model**, retrying failed configurations, and additional-epoch training for resumable PyTorch/TensorFlow MLPs. Open `workbench PROJECT --predict` and choose a saved entry; failed entries show their error, settings, and retry action. See [PREDICTION_GUIDE.md](PREDICTION_GUIDE.md).
+Saved-model inspection now includes **Create a new model**, retrying failed configurations, and additional-epoch training for resumable PyTorch/TensorFlow MLPs. Open `workbench PROJECT --predict` and choose a saved entry; failed entries show their error, settings, and retry action. 
 
-**Guided prediction:** splitting now opens model selection automatically; completed training opens model results and prediction tools. Use `workbench PROJECT --predict` to revisit saved models, inspect rows and true values, view training details, evaluate a tabular test split, or export models and their associated data. See [PREDICTION_GUIDE.md](PREDICTION_GUIDE.md) for the updated flow and training without validation.
+**Guided prediction:** splitting now opens model selection automatically; completed training opens model results and prediction tools. Use `workbench PROJECT --predict` to revisit saved models, inspect rows and true values, view training details, evaluate a tabular test split, or export models and their associated data.
 
-**New model workflow:** run `workbench PROJECT --models` to choose, name, configure and train a model. See [MODEL_GUIDE.md](MODEL_GUIDE.md) for the full catalog, optional installations, image/text/time-series/recommendation input formats, prediction examples, export support, and limitations. The existing tabular workflow below remains compatible.
+**New model workflow:** run `workbench PROJECT --models` to choose, name, configure and train a model.
 
 ## Start with a project (new in 0.8)
 
@@ -657,7 +657,7 @@ workbench models list
 | `pytorch:mlp` | Tabular MLP | Tabular MLP | Yes |
 | `tensorflow:mlp` | Tabular MLP | Tabular MLP | Yes |
 
-The table above lists the original adapters. The expanded catalog includes additional sklearn estimators, LightGBM, CatBoost, CNNs, transformers, clustering, projections, forecasting and recommendation models; see [MODEL_GUIDE.md](MODEL_GUIDE.md). Catalog entries describe supported adapters, not whether optional libraries are installed. A custom NumPy backend remains a future extension.
+The table above lists the original adapters. The expanded catalog includes additional sklearn estimators, LightGBM, CatBoost, CNNs, transformers, clustering, projections, forecasting and recommendation models. Catalog entries describe supported adapters, not whether optional libraries are installed. A custom NumPy backend remains a future extension.
 
 ### Train candidates
 
@@ -880,7 +880,7 @@ The server binds to `127.0.0.1:8501` and opens your browser. Use `--port 8502` f
 7. **Save processed data.** Saving writes a new version into the project's dataset. This is an exploration copy. Final training preparation splits raw data and fits the reviewed recipe on training rows only.
 8. **Create splits.** Choose 70/15/15, 80/10/10, 60/20/20, 80/0/20, or custom percentages totaling 100. Methods include random, stratified (classification), group and chronological. Group/time methods require a column; chronological dates must be ISO 8601. Existing presplit datasets imported through the CLI retain their uploaded test/validation partitions; if needed, choose a validation holdout from their training data.
 9. **Return later.** The dataset selector can reopen older imports. **Saved project files** lists raw data, processed versions and split locations. Reopening a project restores its saved target, recipe and split state. An unsaved preview must be generated again after restarting the server.
-10. **Train a model.** Choose **Continue to models** after splitting, or open **Models** in the left navigation. Select a category and suggested model, edit default hyperparameters, train with live backend progress, inspect Results and Model details, export a ZIP, and try dataset-row or custom Predictions. See [MODELS_UI_GUIDE.md](MODELS_UI_GUIDE.md).
+10. **Train a model.** Choose **Continue to models** after splitting, or open **Models** in the left navigation. Select a category and suggested model, edit default hyperparameters, train with live backend progress, inspect Results and Model details, export a ZIP, and try dataset-row or custom Predictions.
 
 Import/profiling/preparation jobs run in the background and display their current phase. The browser blocks overlapping actions for the same project. Keep the server running until the operation finishes. Reloading can reconnect to an active job; job history itself is not persisted across server restarts. Avoid editing the same project from the CLI while a browser operation is running.
 
@@ -1155,7 +1155,7 @@ cell text is preserved in exported feature columns, including leading zeros.
 history, including train-only runs and supported boosting-round histories. No
 validation curve or loss values are fabricated when unavailable.
 
-**Models → Compare → Generate HTML summary** downloads one self-contained HTML
+**Models → Visualize → Generate HTML summary** downloads one self-contained HTML
 report. Select the dataset/split cohort first. The report contains fresh EDA,
 an accuracy-ranked test leaderboard, and details/results/recorded loss curves of
 the best model in that cohort. Regression uses lowest test RMSE. Ties use model
@@ -1164,3 +1164,35 @@ changing the interactive leaderboard metric does not change the report's default
 accuracy/RMSE criterion. With no evaluated models, export contains EDA and an
 explicit no-model-results note. Images are embedded; viewing requires no server
 or internet connection. Generating fresh EDA can take time on large datasets.
+
+
+## Classification visualizations (0.18)
+
+Select a completed tabular classification model, then open **Models → Visualize**.
+Choose a first feature column and optionally a different second column. Choose
+train, validation or test from the model's saved splits and click **Generate
+classification graph**. One feature gives a 1D strip plot with display-only vertical
+jitter; two features give a 2D scatterplot. Categorical axes are supported up to 30
+sampled categories. True and predicted class panels share axes, rows and class colors.
+These are observed-row plots, not decision-boundary projections.
+
+Each plot uses a uniform, reproducible sample of at most 2,000 split rows. Source,
+sampled and plotted counts are saved; missing/nonfinite axes and rows excluded by
+preprocessing are omitted from both panels. Unknown true labels are gray. Generated
+PNGs and their metadata are saved under the project's visualizations folder.
+
+Below each graph, **Add this graph to the HTML summary** saves your inclusion choice.
+The summary export controls now live below the graph gallery in Visualize, rather
+than Compare. Choose the summary dataset/split and generate the HTML. Checked graphs
+from models sharing that exact dataset/split are embedded, with model names, feature
+names, split and sample notes. Other cohorts' graphs remain saved but are excluded.
+Regression and specialized models can still export summaries here, but these column
+classification plots require a supervised tabular classification model.
+
+
+Leaderboard fallback: when a completed tabular model has no test split/data,
+Compare uses its recorded training metrics and labels the cohort **Training
+fallback**. The HTML summary applies the same rule and explicitly identifies
+in-sample scores. Models with test data but no successful test evaluation stay
+unranked until evaluation succeeds; training scores do not silently replace a
+failed test evaluation.

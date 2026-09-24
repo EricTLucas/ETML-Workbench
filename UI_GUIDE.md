@@ -105,7 +105,7 @@ cell text is preserved in exported feature columns, including leading zeros.
 history, including train-only runs and supported boosting-round histories. No
 validation curve or loss values are fabricated when unavailable.
 
-**Models → Compare → Generate HTML summary** downloads one self-contained HTML
+**Models → Visualize → Generate HTML summary** downloads one self-contained HTML
 report. Select the dataset/split cohort first. The report contains fresh EDA,
 an accuracy-ranked test leaderboard, and details/results/recorded loss curves of
 the best model in that cohort. Regression uses lowest test RMSE. Ties use model
@@ -114,3 +114,35 @@ changing the interactive leaderboard metric does not change the report's default
 accuracy/RMSE criterion. With no evaluated models, export contains EDA and an
 explicit no-model-results note. Images are embedded; viewing requires no server
 or internet connection. Generating fresh EDA can take time on large datasets.
+
+
+## Classification visualizations (0.18)
+
+Select a completed tabular classification model, then open **Models → Visualize**.
+Choose a first feature column and optionally a different second column. Choose
+train, validation or test from the model's saved splits and click **Generate
+classification graph**. One feature gives a 1D strip plot with display-only vertical
+jitter; two features give a 2D scatterplot. Categorical axes are supported up to 30
+sampled categories. True and predicted class panels share axes, rows and class colors.
+These are observed-row plots, not decision-boundary projections.
+
+Each plot uses a uniform, reproducible sample of at most 2,000 split rows. Source,
+sampled and plotted counts are saved; missing/nonfinite axes and rows excluded by
+preprocessing are omitted from both panels. Unknown true labels are gray. Generated
+PNGs and their metadata are saved under the project's visualizations folder.
+
+Below each graph, **Add this graph to the HTML summary** saves your inclusion choice.
+The summary export controls now live below the graph gallery in Visualize, rather
+than Compare. Choose the summary dataset/split and generate the HTML. Checked graphs
+from models sharing that exact dataset/split are embedded, with model names, feature
+names, split and sample notes. Other cohorts' graphs remain saved but are excluded.
+Regression and specialized models can still export summaries here, but these column
+classification plots require a supervised tabular classification model.
+
+
+Leaderboard fallback: when a completed tabular model has no test split/data,
+Compare uses its recorded training metrics and labels the cohort **Training
+fallback**. The HTML summary applies the same rule and explicitly identifies
+in-sample scores. Models with test data but no successful test evaluation stay
+unranked until evaluation succeeds; training scores do not silently replace a
+failed test evaluation.

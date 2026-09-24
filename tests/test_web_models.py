@@ -89,6 +89,39 @@ class ModelWebTests(unittest.TestCase):
         self.wait(response.json(),False)
         self.assertEqual(list((self.root/'projects/demo/exports').rglob('predictions.csv')),[])
 
+    def test_classification_visualizations_and_summary_selection(self):
+        did=self.split();self.train(did)
+        path='projects/demo/models/model1/visualizations'
+        for columns in [['sepal length (cm)'],['sepal length (cm)','petal width (cm)']]:
+            result=self.wait(self.post(path,{'columns':columns,'split':'test'}))
+            self.assertEqual(result['plotted_rows'],30)
+            self.assertTrue(result['image'].startswith('data:image/png;base64,'))
+            self.assertFalse(result['include_summary'])
+        self.wait(self.post(path,{'columns':['target'],'split':'test'}),False)
+        self.wait(self.post('projects/demo/visualizations/'+result['id']+'/summary',{'include':True}))
+        plots=self.get(path);self.assertEqual(len(plots),2)
+        self.assertEqual(sum(p['include_summary'] for p in plots),1)
+        report=self.wait(self.post('projects/demo/analysis-summary',{'reference':result['reference']}))
+        html=self.client.get(report['url']).text
+        self.assertIn('Selected classification visualizations',html)
+        self.assertIn(result['title'],html)
+        self.wait(self.post('projects/demo/visualizations/'+result['id']+'/summary',{'include':False}))
+        self.assertFalse(any(p['include_summary'] for p in self.get(path)))
+
+    def test_compare_training_fallback_without_test_data(self):
+        did=self.prepare()
+        self.wait(self.post('projects/demo/split',{'dataset_id':did,'config':{
+            'strategy':'stratified','train':.8,'validation':.2,'test':0}}))
+        model,_=self.train(did)
+        group=self.get('projects/demo/models/compare')['groups'][0]
+        self.assertEqual(group['evaluation_split'],'train')
+        self.assertEqual(group['models'][0]['metrics']['accuracy'],model['details']['metrics']['training_metrics']['accuracy'])
+        report=self.wait(self.post('projects/demo/analysis-summary',{'reference':group['reference']}))
+        html=self.client.get(report['url']).text
+        self.assertIn('Training metrics fallback',html)
+        self.assertIn('Ranked by training accuracy',html)
+        self.assertEqual(report['best_model'],'model1')
+
     def test_catalog_and_default_name(self):
         overview=self.get('projects/demo/models')
         self.assertEqual(overview['default_name'],'model1')

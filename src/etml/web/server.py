@@ -188,6 +188,21 @@ def create_app(projects_dir='projects', *, max_bytes=512*1024**2):
         project=service.store.get(name)
         return service.submit(name,'Filtering prediction export',lambda:filter_csv(project,export_id,payload))
 
+    @app.get('/api/projects/{name}/models/{model}/visualizations')
+    def model_visualizations(name: str, model: str):
+        from .classification_plots import saved_plots
+        return saved_plots(service.store.get(name),model)
+
+    @app.post('/api/projects/{name}/models/{model}/visualizations')
+    def visualize_model(name: str, model: str, payload: dict):
+        from .classification_plots import create_plot
+        return service.submit(name,'Generating classification plots',lambda:create_plot(service.store.get(name),model,payload))
+
+    @app.post('/api/projects/{name}/visualizations/{plot_id}/summary')
+    def include_visualization(name: str, plot_id: str, payload: dict):
+        from .classification_plots import select_plot
+        return service.submit(name,'Updating summary selection',lambda:select_plot(service.store.get(name),plot_id,payload.get('include')))
+
     @app.post('/api/projects/{name}/analysis-summary')
     def analysis_summary(name: str, payload: dict):
         from .analysis_report import export_analysis

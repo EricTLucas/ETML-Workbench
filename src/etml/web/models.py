@@ -170,15 +170,22 @@ class ModelService:
         import math
         groups = {}
         unavailable = []
-        for record in ProjectModels(self.service.store.get(project_name)).list():
-            metrics = record.get('test_evaluation', {}).get('metrics', {})
+        project=self.service.store.get(project_name)
+        for record in ProjectModels(project).list():
+            metrics = (record.get('test_evaluation') or {}).get('metrics', {})
+            evaluation_split='test'
+            if not metrics and record['status']=='complete' and isinstance(record.get('input'),dict):
+                inspection=ModelInspection(project,record['name'])
+                if inspection.kind=='model_bundle' and 'test' not in inspection.splits():
+                    metrics=inspection.details()['metrics'].get('training_metrics',{})
+                    evaluation_split='train'
             values = {k:v for k,v in metrics.items() if isinstance(v,(int,float)) and not isinstance(v,bool) and math.isfinite(v)}
             reference = record.get('input')
             if record['status'] != 'complete' or not values or not isinstance(reference,dict):
                 unavailable.append(record['name']); continue
             key = json.dumps(reference,sort_keys=True)
-            group = groups.setdefault(key, {'reference':reference,'models':[]})
-            group['models'].append({'name':record['name'],'model':record['model'],'metrics':values})
+            group = groups.setdefault(key, {'reference':reference,'evaluation_split':evaluation_split,'models':[]})
+            group['models'].append({'name':record['name'],'model':record['model'],'metrics':values,'evaluation_split':evaluation_split})
         return {'groups':list(groups.values()),'unavailable':unavailable}
 
     def predict_csv(self, project_name, name, source):

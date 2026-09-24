@@ -51,18 +51,20 @@ def export_analysis(models, project_name, payload):
                    title=project_name+' — Analysis summary')
     try:html=result.html
     finally:result.close()
-    content='<section><h2>Model leaderboard</h2><p>Held-out test results for one dataset and split. Models without test results are not ranked. Choosing models repeatedly using test results compromises an independent test estimate.</p>'
+    content='<section><h2>Model leaderboard</h2><p>Results for one dataset and split. Test metrics are preferred; training metrics are used only when test data is absent. Choosing models repeatedly using test results compromises an independent test estimate.</p>'
     if group:
         metric='accuracy' if any('accuracy' in m['metrics'] for m in group['models']) else 'rmse'
         candidates=[m for m in group['models'] if metric in m['metrics']]
         ranked=sorted(candidates,key=lambda m:((-m['metrics'][metric] if metric=='accuracy' else m['metrics'][metric]),m['name']))
-        content+='<p>Ranked by test '+text(metric)+'. '+('Highest' if metric=='accuracy' else 'Lowest')+' is best. Ties use model name.</p>'
+        evaluation=group.get('evaluation_split','test')
+        if evaluation=='train': content+='<p><strong>Training metrics fallback: no test data. These in-sample scores do not estimate held-out performance.</strong></p>'
+        content+='<p>Ranked by '+('training ' if evaluation=='train' else 'test ')+text(metric)+'. '+('Highest' if metric=='accuracy' else 'Lowest')+' is best. Ties use model name.</p>'
         content+='<div class="table-wrap"><table><thead><tr><th>Rank</th><th>Model</th><th>Algorithm</th><th>'+text(metric)+'</th></tr></thead><tbody>'
         content+=''.join('<tr><td>'+str(i+1)+'</td><td>'+text(m['name'])+'</td><td>'+text(m['model'])+'</td><td>'+text(round(m['metrics'][metric],6))+'</td></tr>' for i,m in enumerate(ranked))+'</tbody></table></div></section>'
         content+='<div class="report-box"><div class="report-box-heading"><h3>Run details</h3><p>Dataset and split used for this comparison.</p></div><div class="report-box-body table-wrap">'+table(reference)+'</div></div>'
         if ranked:
             best=models.details(project_name,ranked[0]['name']);record=best['record'];details=best['details'];metrics=details['metrics']
-            content+='<section><h2>Best model: '+text(record['name'])+'</h2><p>'+text(best['entry']['name'])+' — '+text(best['entry']['description'])+'</p>'+metric_box('Test results',record['test_evaluation']['metrics'],'Held-out evaluation of this saved model.',highlight=True)
+            content+='<section><h2>Best model: '+text(record['name'])+'</h2><p>'+text(best['entry']['name'])+' — '+text(best['entry']['description'])+'</p>'+metric_box('Test results',(record.get('test_evaluation') or {}).get('metrics',{}),'Held-out evaluation of this saved model.',highlight=True)
             content+=metric_box('Validation results',metrics.get('validation',{}),'Used for tuning and model comparison.')
             content+=metric_box('Training results',metrics.get('training_metrics',{}),'In-sample metrics; these do not estimate held-out performance.')
             content+='<h3>Training overview</h3>'+table(metrics)+'<h3>Hyperparameters</h3><pre>'+text(json.dumps(record['params'],indent=2))+'</pre>'
@@ -71,6 +73,13 @@ def export_analysis(models, project_name, payload):
             content+='<h3>Learning curves</h3>'+(''.join('<figure><img alt="'+text(c['title'])+'" src="'+c['image']+'"></figure>' for c in curves) if curves else '<p>No epoch loss history was recorded for this model.</p>')
             content+='<details><summary>Full configuration, metrics and environment</summary><pre>'+text(json.dumps({'record':record,'details':details},indent=2,default=str))+'</pre></details></section>'
     else:content+='<p>No evaluated models are available for this dataset yet.</p></section>'
+    from .classification_plots import saved_plots
+    chosen=[p for p in saved_plots(project) if p.get('include_summary') and p['reference']==reference]
+    if chosen:
+        content+='<section><h2>Selected classification visualizations</h2>'
+        for plot in chosen:
+            content+='<div class="report-box"><div class="report-box-heading"><h3>'+text(plot['title'])+'</h3><p>'+text(plot['note'])+' Plotted '+text(plot['plotted_rows'])+' of '+text(plot['source_rows'])+' source rows.</p></div><div class="report-box-body"><img alt="'+text(plot['title'])+'" src="'+plot['image']+'"></div></div>'
+        content+='</section>'
     # The EDA renderer supplies escaped content, embedded images and its offline styles.
     html=html.replace('<footer>',content+'<footer>',1).replace('</style>',REPORT_STYLE+'</style>',1)
     export_id='analysis-'+uuid.uuid4().hex;root=project.directory/'exports'/export_id;root.mkdir(parents=True)

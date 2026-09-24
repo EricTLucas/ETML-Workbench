@@ -26,7 +26,7 @@ function metricCards(values){
   return '<div class="metric-grid">'+Object.entries(values||{}).filter(([,v])=>v!==undefined&&(v===null||typeof v!=='object')).map(([k,v])=>'<div class="metric"><small>'+esc(pretty(k))+'</small><strong>'+esc(scalar(v))+'</strong></div>').join('')+'</div>';
 }
 function modelTabs(){
-  return '<nav class="tabs model-tabs" aria-label="Model views">'+[['train','Train'],['results','Results'],['details','Model details'],['predictions','Predictions'],['compare','Compare']].map(([key,label])=>'<button data-model-tab="'+key+'" class="'+(ms.tab===key?'active':'')+'">'+label+'</button>').join('')+'</nav>';
+  return '<nav class="tabs model-tabs" aria-label="Model views">'+[['train','Train'],['results','Results'],['details','Model details'],['predictions','Predictions'],['compare','Compare'],['visualize','Visualize']].map(([key,label])=>'<button data-model-tab="'+key+'" class="'+(ms.tab===key?'active':'')+'">'+label+'</button>').join('')+'</nav>';
 }
 function renderModels(){
   const root=$('#data-content');
@@ -38,6 +38,7 @@ function renderModels(){
   $$('[data-model-tab]').forEach(b=>b.onclick=guarded(()=>{ms.tab=b.dataset.modelTab;renderModels();}));
   if(ms.tab==='train')renderTrain();
   else if(ms.tab==='compare')renderCompare().catch(error=>notify(error.message,true));
+  else if(ms.tab==='visualize')renderVisualize().catch(error=>notify(error.message,true));
   else if(!ms.selected)$('#model-content').innerHTML='<section class="empty"><h2>Select a saved model</h2><p>Choose a model above or train a new one to see its results, details and predictions.</p></section>';
   else if(ms.tab==='results')renderResults();
   else if(ms.tab==='details')renderModelDetails();
@@ -246,10 +247,10 @@ async function renderCompare(){
   const root=$('#model-content');root.innerHTML='<p>Loading model comparisons…</p>';
   const comparison=await api(endpoint()+'/models/compare');
   if(ms.tab!=='compare')return;
-  root.innerHTML='<section class="section"><div class="section-head"><div><h2>Model leaderboard</h2><p>Held-out test results, grouped by the same dataset and split. Use validation for repeated tuning; choosing winners repeatedly on test scores makes the test estimate optimistic.</p></div></div><div class="section-body"><label>Dataset and split<select id="compare-group">'+comparison.groups.map((g,i)=>'<option value="'+i+'">'+esc(g.reference.dataset)+' · '+esc(g.reference.run_id)+' · '+g.models.length+' models</option>').join('')+'</select></label><label>Rank by<select id="compare-metric"></select></label><div id="leaderboard"></div><p class="model-note">'+comparison.unavailable.length+' models have no comparable test metrics.</p></div></section>';
+  root.innerHTML='<section class="section"><div class="section-head"><div><h2>Model leaderboard</h2><p>Results grouped by the same dataset and split. Training metrics are used only when test data is absent. Use validation for repeated tuning; choosing winners repeatedly on test scores makes the test estimate optimistic.</p></div></div><div class="section-body"><label>Dataset and split<select id="compare-group">'+comparison.groups.map((g,i)=>'<option value="'+i+'">'+esc(g.reference.dataset)+' · '+esc(g.reference.run_id)+' · '+g.models.length+' models · '+(g.evaluation_split==='train'?'Training fallback':'Test')+'</option>').join('')+'</select></label><label>Rank by<select id="compare-metric"></select></label><div id="leaderboard"></div><p class="model-note">'+comparison.unavailable.length+' models have no comparable metrics.</p></div></section>';
   function chooseGroup(){
     const group=comparison.groups[Number($('#compare-group').value)];
-    if(!group){$('#leaderboard').innerHTML='<p>Train and evaluate models on a labeled test split to compare results.</p>';return;}
+    if(!group){$('#leaderboard').innerHTML='<p>Train a model to compare its recorded results.</p>';return;}
     const metrics=[...new Set(group.models.flatMap(m=>Object.keys(m.metrics)))];
     $('#compare-metric').innerHTML=metrics.map(k=>'<option value="'+esc(k)+'">'+esc(pretty(k))+'</option>').join('');
     $('#compare-metric').value=metrics.includes('accuracy')?'accuracy':metrics.includes('rmse')?'rmse':metrics[0];
@@ -261,10 +262,8 @@ async function renderCompare(){
     const lower=/^(rmse|mse|mae|mape|log_loss|loss|brier|median_absolute_error|fit_seconds)/.test(metric);
     const rows=[...group.models].sort((a,b)=>{const x=a.metrics[metric],y=b.metrics[metric];if(x===undefined)return 1;if(y===undefined)return -1;return (lower?1:-1)*(x-y)||a.name.localeCompare(b.name);});
     const fields=[metric,...[...new Set(rows.flatMap(m=>Object.keys(m.metrics)))].filter(k=>k!==metric)];
-    $('#leaderboard').innerHTML='<p class="model-note">'+(lower?'Lower':'Higher')+' is better. Unavailable scores are unranked.</p><div class="table-wrap"><table><thead><tr><th>Rank</th><th>Model</th>'+fields.map(k=>'<th>'+esc(pretty(k))+'</th>').join('')+'</tr></thead><tbody>'+rows.map((m,i)=>'<tr><td>'+(m.metrics[metric]===undefined?'—':i+1)+'</td><td>'+esc(m.name)+'<br><small>'+esc(m.model)+'</small></td>'+fields.map(k=>'<td>'+esc(scalar(m.metrics[k]))+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';
+    $('#leaderboard').innerHTML=(group.evaluation_split==='train'?'<div class="callout">Training metrics fallback — no test data. These are in-sample scores, not held-out performance.</div>':'<p class="model-note">Evaluation source: test data</p>')+'<p class="model-note">'+(lower?'Lower':'Higher')+' is better. Unavailable scores are unranked.</p><div class="table-wrap"><table><thead><tr><th>Rank</th><th>Model</th>'+fields.map(k=>'<th>'+esc(pretty(k))+'</th>').join('')+'</tr></thead><tbody>'+rows.map((m,i)=>'<tr><td>'+(m.metrics[metric]===undefined?'—':i+1)+'</td><td>'+esc(m.name)+'<br><small>'+esc(m.model)+'</small></td>'+fields.map(k=>'<td>'+esc(scalar(m.metrics[k]))+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';
   }
-  root.insertAdjacentHTML('beforeend','<section class="section"><div class="section-head"><h2>Export analysis summary</h2></div><div class="section-body"><p>One offline HTML file with EDA, the selected split’s accuracy leaderboard, and the best model’s details, results and recorded loss curves. Regression uses RMSE.</p><button id="export-analysis" class="primary">Generate HTML summary</button><div id="analysis-result"></div></div></section>');
-  bind('#export-analysis',async()=>{const group=comparison.groups[Number($('#compare-group').value)];const result=await job(endpoint()+'/analysis-summary',{reference:group?.reference||null,dataset_id:dataset()?.id});$('#analysis-result').innerHTML='<div class="callout success"><a href="'+esc(result.url)+'" download="'+esc(result.name)+'">Download analysis summary</a></div>';});
   bind('#compare-group',chooseGroup,'change');bind('#compare-metric',draw,'change');chooseGroup();
 }
 
@@ -276,4 +275,28 @@ function learningCurvesHTML(selected){
 function renderCSVExport(result){
   $('#csv-result').innerHTML='<div class="callout success">'+result.rows+' rows processed · '+result.excluded+' rows have no prediction. <a href="'+esc(result.url)+'" download="'+esc(result.name)+'">Download all predictions</a></div><h3>Choose export columns</h3><div class="column-options">'+result.columns.map(c=>'<label class="check"><input type="checkbox" data-export-column="'+esc(c)+'" checked>'+esc(c)+'</label>').join('')+'</div><div class="grid"><label>Include rows<input id="csv-include" placeholder="All rows, or 1, 3-10"></label><label>Exclude rows<input id="csv-exclude" placeholder="None, or 2, 11-15"></label></div><p class="model-note">Original CSV row numbers, starting at 1 (header excluded). Exclusions take priority. Filtering affects the download only.</p><button type="button" id="filter-csv">Create filtered CSV</button><div id="filtered-result"></div>';
   bind('#filter-csv',async()=>{const columns=$$('[data-export-column]').filter(c=>c.checked).map(c=>c.dataset.exportColumn);if(!columns.length)throw Error('Select at least one column.');const filtered=await job(endpoint()+'/prediction-exports/'+encodeURIComponent(result.id)+'/filter',{columns,include_rows:$('#csv-include').value,exclude_rows:$('#csv-exclude').value});$('#filtered-result').innerHTML='<div class="callout success">'+filtered.rows+' rows · '+filtered.columns.length+' columns. <a href="'+esc(filtered.url)+'" download="'+esc(filtered.name)+'">Download filtered CSV</a></div>';});
+}
+
+async function renderVisualize(){
+  const root=$('#model-content'),selected=ms.selected;
+  root.innerHTML='<section class="section"><div class="section-head"><h2>Visualize data</h2></div><div class="section-body" id="visualize-controls"></div></section><div id="classification-gallery"></div><section class="section"><div class="section-head"><h2>Export analysis summary</h2></div><div class="section-body stack"><p>EDA, the accuracy leaderboard and best-model results, plus selected graphs. Uses test metrics, or training metrics if no test data exists. Regression uses RMSE.</p><label>Summary dataset and split<select id="summary-group"></select></label><button id="export-analysis" class="primary">Generate HTML summary</button><div id="analysis-result"></div></div></section>';
+  const supported=selected?.kind==='model_bundle'&&selected.custom_target?.task==='classification';
+  if(supported){
+    const columns=Object.keys(selected.custom_fields.values);
+    $('#visualize-controls').innerHTML='<form id="classification-plot" class="stack"><p>Compare true and predicted classes on the same rows. Choose one feature for a 1D plot or two for a 2D plot.</p><div class="grid"><label>First column<select name="x">'+columns.map(c=>'<option>'+esc(c)+'</option>').join('')+'</select></label><label>Second column<select name="y"><option value="">None — 1D</option>'+columns.map(c=>'<option>'+esc(c)+'</option>').join('')+'</select></label><label>Data split<select name="split">'+Object.entries(selected.splits).map(([k,v])=>'<option value="'+k+'">'+pretty(k)+' · '+v.rows+' rows</option>').join('')+'</select></label></div><p class="model-note">Plots use a reproducible sample of up to 2,000 rows. Missing axes or excluded predictions are omitted. A 1D plot uses small vertical jitter for visibility, not a second feature.</p><button class="primary">Generate classification graph</button></form>';
+    bind('#classification-plot',async event=>{event.preventDefault();const f=new FormData(event.target),columns=[f.get('x')];if(f.get('y'))columns.push(f.get('y'));if(new Set(columns).size!==columns.length)throw Error('Choose two different columns.');await job(modelPath()+'/visualizations',{columns,split:f.get('split')});await refreshClassificationGallery();},'submit');
+    await refreshClassificationGallery();
+  }else $('#visualize-controls').innerHTML='<p>Select a trained tabular classification model above to graph its true and predicted classes. Summary export is available below for other tasks too.</p>';
+  const comparison=await api(endpoint()+'/models/compare');
+  if(ms.tab!=='visualize')return;
+  $('#summary-group').innerHTML=comparison.groups.length?comparison.groups.map((g,i)=>'<option value="'+i+'">'+esc(g.reference.dataset)+' · '+esc(g.reference.run_id)+'</option>').join(''):'<option value="">Current dataset — EDA only</option>';
+  const current=comparison.groups.findIndex(g=>JSON.stringify(g.reference)===JSON.stringify(selected?.record.input));
+  if(current>=0)$('#summary-group').value=String(current);
+  bind('#export-analysis',async()=>{const group=comparison.groups[Number($('#summary-group').value)];const result=await job(endpoint()+'/analysis-summary',{reference:group?.reference||null,dataset_id:dataset()?.id});$('#analysis-result').innerHTML='<div class="callout success"><a href="'+esc(result.url)+'" download="'+esc(result.name)+'">Download analysis summary</a></div>';});
+}
+async function refreshClassificationGallery(){
+  const plots=await api(modelPath()+'/visualizations');
+  if(ms.tab!=='visualize')return;
+  $('#classification-gallery').innerHTML=plots.map(p=>'<section class="section"><div class="section-head"><div><h2>'+esc(p.title)+'</h2><p>'+esc(p.note)+' Plotted '+p.plotted_rows+' of '+p.source_rows+' rows; '+p.omitted_rows+' sampled rows omitted.</p></div></div><div class="section-body"><img class="learning-curve" src="'+esc(p.image)+'" alt="'+esc(p.title)+'"><label class="check"><input type="checkbox" data-summary-plot="'+esc(p.id)+'" '+(p.include_summary?'checked':'')+'>Add this graph to the HTML summary</label></div></section>').join('');
+  $$('[data-summary-plot]').forEach(input=>input.onchange=guarded(async()=>{try{await job(endpoint()+'/visualizations/'+encodeURIComponent(input.dataset.summaryPlot)+'/summary',{include:input.checked});}catch(error){input.checked=!input.checked;throw error;}}));
 }
