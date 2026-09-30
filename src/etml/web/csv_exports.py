@@ -42,5 +42,7 @@ def filter_csv(project, export_id, payload):
         if any(b>offset for _,b in include+exclude):raise ValueError(f'Row selection exceeds the {offset} source rows.')
     except Exception:
         target.unlink(missing_ok=True);raise
+    import shutil
+    if (source.parent/'origin.json').exists():shutil.copyfile(source.parent/'origin.json',root/'origin.json')
     return {'id':new_id,'rows':count,'columns':columns,'name':'filtered-predictions.csv',
             'url':'/downloads/'+project.name+'/'+new_id+'/predictions.csv'}

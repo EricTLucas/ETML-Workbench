@@ -1,6 +1,6 @@
 """Browser operations sharing the CLI's persistent project workflows."""
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
+from threading import Lock, Event
 from pathlib import Path
 import json
 import uuid
@@ -32,19 +32,24 @@ class Service:
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='etml-web')
         self.lock = Lock()
         self.jobs, self.busy, self.previews = {}, {}, {}
+        self.controls = {}
 
     def close(self):
         self.pool.shutdown(wait=True)
 
-    def submit(self, name, label, operation, *, with_progress=False):
+    def submit(self, name, label, operation, *, with_progress=False, early_stop=False):
         self.store.get(name)
         with self.lock:
             if name in self.busy:
                 raise ValueError('This project has an operation in progress. Wait for it to finish.')
             job_id = uuid.uuid4().hex
-            self.jobs[job_id] = {'id': job_id, 'project': name, 'label': label, 'status': 'queued'}
+            self.jobs[job_id] = {'id': job_id, 'project': name, 'label': label, 'status': 'queued', 'cancellable':with_progress, 'early_stop':early_stop}
+            control={'cancel':Event(),'stop':Event()}
+            self.controls[job_id]=control
             self.busy[name] = job_id
         def run():
+            from training.control import CONTROL, check_cancelled, TrainingCancelled
+            context_token=CONTROL.set(control)
             started = monotonic()
             def report(event):
                 # Keep real backend events bounded; never invent percentage progress.
@@ -53,24 +58,42 @@ class Service:
                     job['elapsed_seconds'] = monotonic()-started
                     job.setdefault('events', []).append(dict(event))
                     job['events'] = job['events'][-200:]
+                check_cancelled()
             with self.lock:
                 self.jobs[job_id]['status'] = 'running'
             try:
+                check_cancelled()
                 result = operation(report) if with_progress else operation()
                 with self.lock:
                     self.jobs[job_id].update(status='done', result=result)
+            except TrainingCancelled as exc:
+                with self.lock:
+                    self.jobs[job_id].update(status='cancelled',error=str(exc))
             except Exception as exc:
                 with self.lock:
                     self.jobs[job_id].update(status='failed', error=str(exc))
             finally:
+                CONTROL.reset(context_token)
                 with self.lock:
+                    self.controls.pop(job_id,None)
                     self.busy.pop(name, None)
                     # Bound finished job metadata while keeping active jobs.
                     for key in list(self.jobs)[:-100]:
-                        if self.jobs[key]['status'] in {'done', 'failed'}:
+                        if self.jobs[key]['status'] in {'done', 'failed', 'cancelled'}:
                             self.jobs.pop(key, None)
         self.pool.submit(run)
         return {'job_id': job_id}
+
+    def cancel(self, job_id, mode='cancel'):
+        with self.lock:
+            job=self.jobs[job_id]
+            if job['status'] not in {'queued','running'}:return dict(job)
+            if not job.get('cancellable'):raise ValueError('This operation does not support training cancellation.')
+            if mode not in {'cancel','stop'}:raise ValueError('Unknown stop mode.')
+            if mode=='stop' and not job.get('early_stop'):raise ValueError('Ending after an epoch is supported for tabular PyTorch/TensorFlow MLP training.')
+            self.controls[job_id][mode].set()
+            job['cancel_requested' if mode=='cancel' else 'stop_requested']=True
+            return dict(job)
 
     def job(self, job_id):
         with self.lock:
@@ -96,9 +119,10 @@ class Service:
         with batches(lambda: open_dataset(prep.source()).iter_batches(batch_size=10)) as iterator:
             first = next(iterator, None)
         state = prep.state()
+        from data.intelligence import load
         result['dataset'] = {'id': dataset.dataset_id, 'name': dataset.manifest.name,
             'sources': [str(p) for p in prep.source()],
-            'columns': {str(k): str(v) for k, v in prep.schema().items()},
+            'columns': {str(k): str(v) for k, v in prep.schema().items()}, 'intelligence':load(dataset),
             'preview': table(first.head(10)) if first is not None else {'columns': [], 'rows': [], 'indexes': []},
             'report': self.report(dataset), 'state': state,
             'presplit': dict(dataset.manifest.split_files),
@@ -116,7 +140,10 @@ class Service:
                          profile_config=ProfileConfig(batch_size=50_000, sample_size=5_000),
                          title=name+' — Data overview')
         try:
-            return {'report': result.html_path.relative_to(prep.dataset.profiles_dir).as_posix()}
+            from data.intelligence import analyze, decorate, write_report
+            context=analyze(prep.dataset,result.profile)
+            write_report(result.html_path,decorate(result.html,prep.dataset))
+            return {'ai_error':context.get('error'),'report': result.html_path.relative_to(prep.dataset.profiles_dir).as_posix()}
         finally:
             result.close()
 
@@ -141,6 +168,8 @@ class Service:
             dataset = sources.import_url(workspace, payload['url'], **kwargs)
         else:
             raise ValueError('Unknown data source')
+        from data.intelligence import configure
+        configure(dataset,payload.get('explanation',''),payload.get('ai_analysis') is True,payload.get('ai_samples') is True)
         result = {'dataset_id': dataset.dataset_id}
         if payload.get('analyze', True):
             try:
@@ -200,4 +229,6 @@ class Service:
     def split(self, name, payload):
         prep = self.preparation(name, payload['dataset_id'])
         prep.split(SplitConfig(**payload['config']), validation_fraction=payload.get('validation_fraction', .2))
+        from data.intelligence import refresh_reports
+        refresh_reports(prep.dataset)
         return prep.state()['split']

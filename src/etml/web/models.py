@@ -24,8 +24,21 @@ class ModelService:
         for path in sorted((project.directory/'inputs').glob('input-*')):
             _, info = load_model_input(path)
             inputs.append({'id': path.name, 'modality': info['modality'], 'task': info.get('task')})
+        from models.recommendations import recommend
+        from workflows.project_preparation import ProjectPreparation
+        rows=features=0
+        if project.current_dataset() is not None:
+            prep=ProjectPreparation(project)
+            state=prep.state()
+            rows=state.get('split',{}).get('prepared_counts',{}).get('train',0)
+            features=max(0,len(prep.schema())-1-len(state.get('task',{}).get('excluded_columns',[])))
+            if state.get('split'):
+                from eda_tool.loader import open_dataset
+                training=resolve_inside(prep.dataset.directory,state['split']['path'])/'prepared'/'train'
+                files=list(training.glob('*.parquet'))
+                if files:features=max(0,len(open_dataset(files).schema())-1)
         return {'models': store.list(), 'default_name': store.default_name(), 'inputs': inputs,
-                'catalog': [dict(e.to_dict(), recommended_tasks=[t for t in e.tasks if e in suggest(t,e.modality)]) for e in CATALOG.values()]}
+                'catalog': [dict(recommend(e,rows,features), recommended_tasks=[t for t in e.tasks if e in suggest(t,e.modality)]) for e in CATALOG.values()]}
 
     def details(self, project_name, name):
         project = self.service.store.get(project_name)
@@ -186,7 +199,7 @@ class ModelService:
             key = json.dumps(reference,sort_keys=True)
             group = groups.setdefault(key, {'reference':reference,'evaluation_split':evaluation_split,'models':[]})
             group['models'].append({'name':record['name'],'model':record['model'],'metrics':values,'evaluation_split':evaluation_split})
-        return {'groups':list(groups.values()),'unavailable':unavailable}
+        return {'groups':list(groups.values()),'unavailable':unavailable,'all_models':[{'name':r['name'],'model':r['model'],'reference':r.get('input'),'metrics':(r.get('test_evaluation') or {}).get('metrics',{}),'competition_scores':r.get('competition_scores',{})} for r in ProjectModels(project).list()]}
 
     def predict_csv(self, project_name, name, source):
         import pandas as pd
@@ -223,6 +236,8 @@ class ModelService:
         except Exception:
             path.unlink(missing_ok=True)
             raise
+        from data.manifest import write_json
+        write_json(root/'origin.json',{'model':name})
         return {'url':'/downloads/'+project_name+'/'+export_id+'/predictions.csv',
                 'id':export_id,'columns':frame.columns.tolist(),
                 'name':name+'-predictions.csv','rows':rows,'excluded':excluded,'target':target}

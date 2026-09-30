@@ -206,6 +206,8 @@ def train_models(workspace, dataset_id, task_id, preparation_run, *, configs=Non
             else:
                 adapter.max_bytes=max_bytes
                 adapter.fit(x_train,y_train)
+            from training.control import check_cancelled
+            check_cancelled()
             fit_seconds=perf_counter()-fit_started
             training_prediction=adapter.predict(x_train)
             training_scores=evaluate_predictions(y_train,training_prediction,task_type,

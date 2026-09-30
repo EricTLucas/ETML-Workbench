@@ -1,1 +1,2 @@
-"""Local project interface; install the ui extra to serve it."""
+"""ETML Workbench command entry point."""
+__version__ = '0.20.0'

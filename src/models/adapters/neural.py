@@ -108,7 +108,9 @@ class NeuralAdapter(ModelAdapter):
             self.state = {'epoch':0,'best_epoch':0,'best_loss':None,'bad_epochs':0,
                           'stopped_early':False,'history':[]}
         size = self.options['batch_size']
+        from training.control import check_cancelled, stop_requested
         for epoch in range(self.state['epoch']+1,self.options['epochs']+1):
+            check_cancelled()
             order = np.random.default_rng(np.random.SeedSequence([self.config.seed,epoch])).permutation(len(y))
             for start in range(0,len(y),size):
                 indices = order[start:start+size]
@@ -129,10 +131,11 @@ class NeuralAdapter(ModelAdapter):
             self.state['epoch']=epoch
             patience = self.options['patience'] if validation_data is not None else None
             self.state['stopped_early'] = patience is not None and self.state['bad_epochs']>=patience
+            self.state['stopped_by_user']=stop_requested()
             saved = checkpoint(self,self.state) if checkpoint else None
             if progress:
                 progress({'stage':'epoch',**row,'checkpoint':str(saved) if saved else None})
-            if self.state['stopped_early']:
+            if self.state['stopped_early'] or self.state['stopped_by_user']:
                 break
         self._restore_best()
         self.history = self.state['history']

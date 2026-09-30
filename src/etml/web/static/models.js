@@ -26,7 +26,7 @@ function metricCards(values){
   return '<div class="metric-grid">'+Object.entries(values||{}).filter(([,v])=>v!==undefined&&(v===null||typeof v!=='object')).map(([k,v])=>'<div class="metric"><small>'+esc(pretty(k))+'</small><strong>'+esc(scalar(v))+'</strong></div>').join('')+'</div>';
 }
 function modelTabs(){
-  return '<nav class="tabs model-tabs" aria-label="Model views">'+[['train','Train'],['results','Results'],['details','Model details'],['predictions','Predictions'],['compare','Compare'],['visualize','Visualize']].map(([key,label])=>'<button data-model-tab="'+key+'" class="'+(ms.tab===key?'active':'')+'">'+label+'</button>').join('')+'</nav>';
+  return '<nav class="tabs model-tabs" aria-label="Model views">'+[['train','Train'],['results','Results'],['details','Model details'],['predictions','Predictions'],['compare','Compare'],['visualize','Visualize'],['optimize','Optimize model']].map(([key,label])=>'<button data-model-tab="'+key+'" class="'+(ms.tab===key?'active':'')+'">'+label+'</button>').join('')+'</nav>';
 }
 function renderModels(){
   const root=$('#data-content');
@@ -39,6 +39,7 @@ function renderModels(){
   if(ms.tab==='train')renderTrain();
   else if(ms.tab==='compare')renderCompare().catch(error=>notify(error.message,true));
   else if(ms.tab==='visualize')renderVisualize().catch(error=>notify(error.message,true));
+  else if(ms.tab==='optimize')renderOptimize().catch(error=>notify(error.message,true));
   else if(!ms.selected)$('#model-content').innerHTML='<section class="empty"><h2>Select a saved model</h2><p>Choose a model above or train a new one to see its results, details and predictions.</p></section>';
   else if(ms.tab==='results')renderResults();
   else if(ms.tab==='details')renderModelDetails();
@@ -94,7 +95,7 @@ function parameterField(key,value){
 }
 function renderSettings(){
   const e=ms.entry;
-  $('#model-settings').innerHTML='<form id="train-model-form"><section class="section">'+stepHead('2','Make it yours','Common defaults are filled in. Change only what you need.')+'<div class="section-body stack"><label>Model name<input id="model-name" required value="'+esc(ms.overview.default_name)+'" maxlength="80"></label><div class="grid three">'+Object.entries(e.defaults).map(([k,v])=>parameterField(k,v)).join('')+'</div>'+(!Object.keys(e.defaults).length?'<p>This model uses its standard library defaults.</p>':'')+'<details><summary>Additional hyperparameters</summary><p class="model-note">Optional JSON overrides for parameters supported by this model.</p><textarea id="extra-params" rows="3" spellcheck="false">{}</textarea></details></div></section><section class="section">'+stepHead('3','Training input','Saved models keep a reference to the exact input used for training.')+'<div class="section-body" id="training-input"></div></section><div class="actions"><button class="primary" type="submit">Train model →</button></div></form>';
+  $('#model-settings').innerHTML='<form id="train-model-form"><section class="section">'+stepHead('2','Make it yours',e.recommendation_note||'Common defaults are filled in. Change only what you need.')+'<div class="section-body stack"><label>Model name<input id="model-name" required value="'+esc(ms.overview.default_name)+'" maxlength="80"></label><div class="grid three">'+Object.entries(e.defaults).map(([k,v])=>parameterField(k,v)).join('')+'</div>'+(!Object.keys(e.defaults).length?'<p>This model uses its standard library defaults.</p>':'')+'<details><summary>Additional hyperparameters</summary><p class="model-note">Optional JSON overrides for parameters supported by this model.</p><textarea id="extra-params" rows="3" spellcheck="false">{}</textarea></details></div></section><section class="section">'+stepHead('3','Training input','Saved models keep a reference to the exact input used for training.')+'<div class="section-body" id="training-input"></div></section><div class="actions"><button class="primary" type="submit">Train model →</button></div></form>';
   renderTrainingInput();
   bind('#train-model-form',async event=>{
     event.preventDefault();
@@ -142,11 +143,16 @@ function renderTrainingInput(){
   bind('#special-input',event=>{$('#new-special-input').hidden=!!event.target.value;},'change');
 }
 function progressHTML(){
-  return '<section class="section"><div class="section-head"><div class="step-title"><div class="spinner"></div><div><h2>Training in progress</h2><p id="training-phase">Preparing your model…</p></div></div><span id="training-time" class="badge">0 s</span></div><div class="section-body"><p class="model-note">Keep the server running. Epoch metrics appear when the backend reports them; other models report their training stage.</p><div id="training-events"></div></div></section>';
+  return '<section class="section"><div class="section-head"><div class="step-title"><div class="spinner"></div><div><h2>Training in progress</h2><p id="training-phase">Preparing your model…</p></div></div><span id="training-time" class="badge">0 s</span></div><div class="section-body"><p class="model-note">Keep the server running. Epoch metrics appear when the backend reports them; other models report their training stage.</p><div id="training-events"></div><div class="actions"><button id="cancel-training" type="button" disabled>Cancel training</button><button id="end-training" type="button" hidden>End after this epoch</button></div><p id="training-control-note" class="model-note">Cancellation waits for the next safe backend boundary. A blocking fit may need to finish first.</p></div></section>';
 }
 function updateModelProgress(jobState){
   ms.lastJob=jobState;
   if(!$('#training-events'))return;
+  const cancel=$('#cancel-training'),stop=$('#end-training');
+  if(cancel){cancel.disabled=!jobState.cancellable||!!jobState.cancel_requested;cancel.onclick=()=>requestTrainingControl(jobState.id,'cancel');}
+  if(stop){stop.hidden=!jobState.early_stop;stop.disabled=!!jobState.stop_requested||!!jobState.cancel_requested;stop.onclick=()=>requestTrainingControl(jobState.id,'stop');}
+  if(jobState.cancel_requested)$('#training-control-note').textContent='Cancellation requested. Waiting for a safe boundary; completed trials and checkpoints are retained.';
+  else if(jobState.stop_requested)$('#training-control-note').textContent='Finishing this epoch, then saving the model using its existing best-weight selection policy.';
   const events=jobState.events||[],last=events.at(-1);
   $('#training-phase').textContent=last?.message||[pretty(last?.stage||jobState.status||'Preparing'),last?.model||''].join(' · ');
   $('#training-time').textContent=Math.round((Date.now()-(ms.started||Date.now()))/1000)+' s';
@@ -213,8 +219,10 @@ function renderPredictions(){
 
   $('#model-content').innerHTML='<section class="section"><div class="section-head"><div><h2>Try your model</h2><p>Inspect an existing row or provide a new example.</p></div></div><div class="section-body"><div class="grid prediction-panels"><form id="predict-row" class="prediction-box stack"><h3>Dataset example</h3><label>Saved split<select name="split">'+Object.entries(s.splits).map(([k,v])=>'<option value="'+k+'">'+pretty(k)+' · '+v.rows+' rows</option>').join('')+'</select></label><label>Row number<input name="row" type="number" min="1" step="1" value="1" required></label><button class="primary" '+(!Object.keys(s.splits).length?'disabled':'')+'>Predict this row</button></form><section class="prediction-box"><h3>Custom example</h3><p class="model-note">Provide raw values, before preprocessing. Leave a field blank for a missing value.</p>'+(!s.custom_supported?'<div class="callout">This model only supports stored assignments for fitted rows. It cannot predict new examples.</div>':'<form id="predict-custom" class="stack">'+Object.entries(fields.values).map(([key,value])=>'<label>'+esc(key)+'<input data-custom="'+esc(key)+'" value="'+esc(value===null?'':typeof value==='object'?JSON.stringify(value):value)+'" placeholder="'+esc(fields.dtypes?.[key]||'value')+'"></label>').join('')+actualField+'<button class="primary">Predict custom example</button></form>')+'</section></div></div></section><div id="prediction-result"></div>';
   if(s.kind==='model_bundle'){
-    $('#model-content').insertAdjacentHTML('beforeend','<section class="section"><div class="section-head"><div><h2>Predict a CSV</h2><p>Upload raw feature columns. Predictions populate '+esc(target.name)+'. Existing target values are preserved in a separate actual column. Rows excluded by preprocessing receive a blank prediction. After generation, choose columns and rows for your download.</p></div></div><form id="predict-csv" class="section-body stack"><input type="file" name="file" accept=".csv,text/csv" required aria-label="Prediction CSV"><button class="primary">Generate predictions CSV</button><div id="csv-result"></div></form></section>');
-    bind('#predict-csv',async event=>{event.preventDefault();const result=await job(modelPath()+'/predict-csv',new FormData(event.target),true);renderCSVExport(result);},'submit');
+    $('#model-content').insertAdjacentHTML('beforeend','<section class="section"><div class="section-head"><div><h2>Predict a CSV</h2><p>Upload raw feature columns. Predictions populate '+esc(target.name)+'. Existing target values are preserved in a separate actual column. Rows excluded by preprocessing receive a blank prediction. After generation, choose columns and rows for your download.</p></div></div><form id="predict-csv" class="section-body stack"><label>Prediction file<select id="saved-prediction-file"><option value="">Add file…</option></select></label><input type="file" name="file" accept=".csv,text/csv" aria-label="Prediction CSV"><button class="primary">Generate predictions CSV</button><div id="csv-result"></div></form></section>');
+    loadPredictionLibrary().catch(error=>notify(error.message,true));
+    bind('#saved-prediction-file',()=>{$('#predict-csv input[type=file]').hidden=!!$('#saved-prediction-file').value;},'change');
+    bind('#predict-csv',async event=>{event.preventDefault();const id=$('#saved-prediction-file').value;const result=id?await job(modelPath()+'/predict-saved',{id}):await job(modelPath()+'/predict-csv',new FormData(event.target),true);await loadPredictionLibrary();await renderCSVExport(result);},'submit');
   }
   const rowForm=$('#predict-row');
   function rowBounds(){const split=$('[name=split]',rowForm).value;$('[name=row]',rowForm).max=s.splits[split]?.rows||1;}
@@ -245,26 +253,15 @@ function showPrediction(result){
 
 async function renderCompare(){
   const root=$('#model-content');root.innerHTML='<p>Loading model comparisons…</p>';
-  const comparison=await api(endpoint()+'/models/compare');
-  if(ms.tab!=='compare')return;
-  root.innerHTML='<section class="section"><div class="section-head"><div><h2>Model leaderboard</h2><p>Results grouped by the same dataset and split. Training metrics are used only when test data is absent. Use validation for repeated tuning; choosing winners repeatedly on test scores makes the test estimate optimistic.</p></div></div><div class="section-body"><label>Dataset and split<select id="compare-group">'+comparison.groups.map((g,i)=>'<option value="'+i+'">'+esc(g.reference.dataset)+' · '+esc(g.reference.run_id)+' · '+g.models.length+' models · '+(g.evaluation_split==='train'?'Training fallback':'Test')+'</option>').join('')+'</select></label><label>Rank by<select id="compare-metric"></select></label><div id="leaderboard"></div><p class="model-note">'+comparison.unavailable.length+' models have no comparable metrics.</p></div></section>';
-  function chooseGroup(){
-    const group=comparison.groups[Number($('#compare-group').value)];
-    if(!group){$('#leaderboard').innerHTML='<p>Train a model to compare its recorded results.</p>';return;}
-    const metrics=[...new Set(group.models.flatMap(m=>Object.keys(m.metrics)))];
-    $('#compare-metric').innerHTML=metrics.map(k=>'<option value="'+esc(k)+'">'+esc(pretty(k))+'</option>').join('');
-    $('#compare-metric').value=metrics.includes('accuracy')?'accuracy':metrics.includes('rmse')?'rmse':metrics[0];
-    draw();
-  }
-  function draw(){
-    const group=comparison.groups[Number($('#compare-group').value)],metric=$('#compare-metric').value;
-    if(!group)return;
-    const lower=/^(rmse|mse|mae|mape|log_loss|loss|brier|median_absolute_error|fit_seconds)/.test(metric);
-    const rows=[...group.models].sort((a,b)=>{const x=a.metrics[metric],y=b.metrics[metric];if(x===undefined)return 1;if(y===undefined)return -1;return (lower?1:-1)*(x-y)||a.name.localeCompare(b.name);});
-    const fields=[metric,...[...new Set(rows.flatMap(m=>Object.keys(m.metrics)))].filter(k=>k!==metric)];
-    $('#leaderboard').innerHTML=(group.evaluation_split==='train'?'<div class="callout">Training metrics fallback — no test data. These are in-sample scores, not held-out performance.</div>':'<p class="model-note">Evaluation source: test data</p>')+'<p class="model-note">'+(lower?'Lower':'Higher')+' is better. Unavailable scores are unranked.</p><div class="table-wrap"><table><thead><tr><th>Rank</th><th>Model</th>'+fields.map(k=>'<th>'+esc(pretty(k))+'</th>').join('')+'</tr></thead><tbody>'+rows.map((m,i)=>'<tr><td>'+(m.metrics[metric]===undefined?'—':i+1)+'</td><td>'+esc(m.name)+'<br><small>'+esc(m.model)+'</small></td>'+fields.map(k=>'<td>'+esc(scalar(m.metrics[k]))+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';
-  }
-  bind('#compare-group',chooseGroup,'change');bind('#compare-metric',draw,'change');chooseGroup();
+  const comparison=await api(endpoint()+'/models/compare');if(ms.tab!=='compare')return;
+  const all=comparison.all_models||[];
+  const competitions=[...new Set(all.flatMap(m=>Object.keys(m.competition_scores||{})))];
+  root.innerHTML='<section class="section"><div class="section-head"><h2>Model leaderboard</h2></div><div class="section-body stack"><p>All models can span different datasets and held-out rows. Their scores are not necessarily directly comparable. Models without a recorded score remain unranked.</p><label>Dataset and split<select id="compare-group"><option value="all">All models</option>'+comparison.groups.map((g,i)=>'<option value="'+i+'">'+esc(g.reference.dataset)+' · '+esc(g.reference.run_id)+'</option>').join('')+'</select></label><label>Score source<select id="compare-source"><option value="test">Test metrics</option>'+competitions.map(c=>'<option value="'+esc(c)+'">Kaggle · '+esc(c)+'</option>').join('')+'</select></label><label>Rank by<select id="compare-metric"></select></label><label>Score order<select id="compare-order"><option value="higher">Higher is better</option><option value="lower">Lower is better</option></select></label><div id="leaderboard"></div></div></section>';
+  function rows(){const value=$('#compare-group').value;const group=comparison.groups[Number(value)];return value==='all'?all:all.filter(m=>JSON.stringify(m.reference)===JSON.stringify(group?.reference));}
+  function scores(m){const source=$('#compare-source').value;return source==='test'?m.metrics:{public_score:m.competition_scores?.[source]?.score};}
+  function options(){const keys=[...new Set(rows().flatMap(m=>Object.entries(scores(m)).filter(([,v])=>typeof v==='number'&&Number.isFinite(v)).map(([k])=>k)))];$('#compare-metric').innerHTML=keys.map(k=>'<option>'+esc(k)+'</option>').join('');$('#compare-metric').value=keys.includes('accuracy')?'accuracy':keys.includes('rmse')?'rmse':keys[0]||'';if($('#compare-source').value==='test')$('#compare-order').value=/loss|error|rmse|mse|mae|mape/.test($('#compare-metric').value)?'lower':'higher';draw();}
+  function draw(){const key=$('#compare-metric').value,lower=$('#compare-order').value==='lower';const score=m=>{const v=scores(m)[key];return typeof v==='number'&&Number.isFinite(v)?v:null;};const sorted=rows().sort((a,b)=>score(a)===null?1:score(b)===null?-1:(lower?1:-1)*(score(a)-score(b)));$('#leaderboard').innerHTML='<div class="table-wrap"><table><thead><tr><th>Rank</th><th>Model</th><th>Dataset / split</th><th>'+esc(pretty(key||'Score'))+'</th></tr></thead><tbody>'+sorted.map((m,i)=>'<tr><td>'+(score(m)===null?'—':i+1)+'</td><td>'+esc(m.name)+'<br>'+esc(m.model)+'</td><td>'+esc(m.reference?.dataset||'')+'<br>'+esc(m.reference?.run_id||'')+'</td><td>'+esc(scalar(score(m)))+'</td></tr>').join('')+'</tbody></table></div>';}
+  bind('#compare-group',options,'change');bind('#compare-source',options,'change');bind('#compare-metric',draw,'change');bind('#compare-order',draw,'change');options();
 }
 
 function learningCurvesHTML(selected){
@@ -272,9 +269,12 @@ function learningCurvesHTML(selected){
   if(!curves.length)return '';
   return '<section class="section"><div class="section-head"><h2>Learning curves</h2></div><div class="section-body">'+curves.map(c=>'<img class="learning-curve" src="'+esc(c.image)+'" alt="'+esc(c.title)+'">').join('')+'</div></section>';
 }
-function renderCSVExport(result){
-  $('#csv-result').innerHTML='<div class="callout success">'+result.rows+' rows processed · '+result.excluded+' rows have no prediction. <a href="'+esc(result.url)+'" download="'+esc(result.name)+'">Download all predictions</a></div><h3>Choose export columns</h3><div class="column-options">'+result.columns.map(c=>'<label class="check"><input type="checkbox" data-export-column="'+esc(c)+'" checked>'+esc(c)+'</label>').join('')+'</div><div class="grid"><label>Include rows<input id="csv-include" placeholder="All rows, or 1, 3-10"></label><label>Exclude rows<input id="csv-exclude" placeholder="None, or 2, 11-15"></label></div><p class="model-note">Original CSV row numbers, starting at 1 (header excluded). Exclusions take priority. Filtering affects the download only.</p><button type="button" id="filter-csv">Create filtered CSV</button><div id="filtered-result"></div>';
-  bind('#filter-csv',async()=>{const columns=$$('[data-export-column]').filter(c=>c.checked).map(c=>c.dataset.exportColumn);if(!columns.length)throw Error('Select at least one column.');const filtered=await job(endpoint()+'/prediction-exports/'+encodeURIComponent(result.id)+'/filter',{columns,include_rows:$('#csv-include').value,exclude_rows:$('#csv-exclude').value});$('#filtered-result').innerHTML='<div class="callout success">'+filtered.rows+' rows · '+filtered.columns.length+' columns. <a href="'+esc(filtered.url)+'" download="'+esc(filtered.name)+'">Download filtered CSV</a></div>';});
+async function renderCSVExport(result){
+  $('#csv-result').innerHTML='<div class="callout success">'+result.rows+' rows processed · '+result.excluded+' rows have no prediction. <a href="'+esc(result.url)+'" download="'+esc(result.name)+'">Download all predictions</a></div><h3>Choose export columns</h3><div class="actions"><button type="button" id="csv-check-all">Check every column</button><button type="button" id="csv-uncheck-all">Uncheck every column</button></div><div class="column-options">'+result.columns.map(c=>'<label class="check"><input type="checkbox" data-export-column="'+esc(c)+'" checked>'+esc(c)+'</label>').join('')+'</div><div class="grid"><label>Include rows<input id="csv-include" placeholder="All rows, or 1, 3-10"></label><label>Exclude rows<input id="csv-exclude" placeholder="None, or 2, 11-15"></label></div><p class="model-note">Original CSV row numbers, starting at 1 (header excluded). Exclusions take priority. Filtering affects the download only.</p><button type="button" id="filter-csv">Create filtered CSV</button><div id="filtered-result"></div>';
+  await exportExtras(result);
+  bind('#csv-check-all',()=>$$('[data-export-column]').forEach(c=>c.checked=true));
+  bind('#csv-uncheck-all',()=>$$('[data-export-column]').forEach(c=>c.checked=false));
+  bind('#filter-csv',async()=>{const columns=$$('[data-export-column]').filter(c=>c.checked).map(c=>c.dataset.exportColumn);if(!columns.length)throw Error('Select at least one column.');const filtered=await job(endpoint()+'/prediction-exports/'+encodeURIComponent(result.id)+'/filter',{columns,include_rows:$('#csv-include').value,exclude_rows:$('#csv-exclude').value});await kaggleBox(filtered);$('#filtered-result').innerHTML='<div class="callout success">'+filtered.rows+' rows · '+filtered.columns.length+' columns. <a href="'+esc(filtered.url)+'" download="'+esc(filtered.name)+'">Download filtered CSV</a></div>';});
 }
 
 async function renderVisualize(){
@@ -299,4 +299,82 @@ async function refreshClassificationGallery(){
   if(ms.tab!=='visualize')return;
   $('#classification-gallery').innerHTML=plots.map(p=>'<section class="section"><div class="section-head"><div><h2>'+esc(p.title)+'</h2><p>'+esc(p.note)+' Plotted '+p.plotted_rows+' of '+p.source_rows+' rows; '+p.omitted_rows+' sampled rows omitted.</p></div></div><div class="section-body"><img class="learning-curve" src="'+esc(p.image)+'" alt="'+esc(p.title)+'"><label class="check"><input type="checkbox" data-summary-plot="'+esc(p.id)+'" '+(p.include_summary?'checked':'')+'>Add this graph to the HTML summary</label></div></section>').join('');
   $$('[data-summary-plot]').forEach(input=>input.onchange=guarded(async()=>{try{await job(endpoint()+'/visualizations/'+encodeURIComponent(input.dataset.summaryPlot)+'/summary',{include:input.checked});}catch(error){input.checked=!input.checked;throw error;}}));
+}
+
+async function requestTrainingControl(id,mode){
+  try{const result=await api('jobs/'+encodeURIComponent(id)+'/cancel',{mode});updateModelProgress(result);}
+  catch(error){notify(error.message,true);}
+}
+async function renderOptimize(){
+  const root=$('#model-content');root.innerHTML='<p>Loading optimization runs…</p>';
+  const runs=await api(endpoint()+'/optimizations');if(ms.tab!=='optimize')return;
+  const selected=ms.selected,supported=selected?.kind==='model_bundle';
+  root.innerHTML='<section class="section"><div class="section-head"><h2>Optimize model</h2></div><div class="section-body stack"><p>Start from a saved model. Every trial creates a separate named model, preserving the original.</p><div class="callout">Use validation to tune for unseen competition data. Split-seed trials change which rows are held out: compare consistency across seeds, rather than selecting a lucky test score.</div>'+(supported?'<h3>Based on '+esc(selected.record.name)+' · '+esc(selected.entry.name)+'</h3><div class="stack"><details open><summary>Different data training splits</summary><form id="optimize-seeds" class="prediction-box stack"><h3>Different data training splits</h3><p>Reuse the saved split method, proportions and recipe. Preprocessing is refitted on each trial’s training rows. Group-based splits retain the original group column.</p><label>Number of splits<input name="count" type="number" min="1" max="50" value="5" required></label><label>Starting split seed<input name="start_seed" type="number" min="0" value="43" required></label><button class="primary">Train split trials</button></form></details><details><summary>Try different hyperparameter settings</summary><form id="optimize-parameters" class="prediction-box stack"><p>Blank fields use the original model settings shown in grey. Each card trains one new model on the same saved split.</p><div id="optimization-variants" class="stack"></div><button type="button" id="add-variant">+ Add model</button><button class="primary">Train parameter trials</button></form></details></div>':'<p>Select a completed tabular model above to start an optimization run.</p>')+'</div></section><section class="section"><div class="section-head"><h2>Optimization leaderboard</h2></div><div class="section-body stack"><label>Experiment<select id="optimization-run">'+runs.map((run,i)=>'<option value="'+i+'">'+esc(run.source_model)+' · '+esc(pretty(run.mode))+' · '+esc(run.status)+' · '+run.trials.length+'/'+run.requested_trials+' trials</option>').join('')+'</select></label><div class="grid"><label>Score source<select id="optimization-source"><option value="test_metrics">Test</option><option value="validation_metrics">Validation</option><option value="training_metrics">Training</option></select></label><label>Rank by<select id="optimization-metric"></select></label></div><div id="optimization-leaderboard"></div></div></section>';
+  async function start(payload){
+    ms.started=Date.now();root.innerHTML=progressHTML();
+    try{const result=await job(modelPath()+'/optimize',payload);ms.optimizationId=result.experiment_id;}
+    finally{ms.started=null;ms.overview=await api(endpoint()+'/models');ms.tab='optimize';await renderOptimize();}
+  }
+  bind('#optimize-seeds',async event=>{event.preventDefault();const f=new FormData(event.target);await start({mode:'seeds',count:Number(f.get('count')),start_seed:Number(f.get('start_seed'))});},'submit');
+  if(supported){
+    const defaults={...selected.entry.defaults,...selected.record.params};
+    const add=()=>{
+      if($$('[data-variant]').length>=50)throw Error('Up to 50 models per group.');
+      const card=document.createElement('div');card.className='prediction-box stack';card.dataset.variant='true';
+      card.innerHTML='<h3>Model configuration</h3><div class="grid three">'+Object.entries(defaults).map(([k,v])=>parameterField(k,v)).join('')+'</div><button type="button" data-remove>Remove model</button>';
+      card.querySelectorAll('[data-param]').forEach(input=>{
+        input.removeAttribute('id');const value=input.value;
+        if(input.tagName==='SELECT'){const option=document.createElement('option');option.value='';option.textContent='Default: '+value;input.prepend(option);}
+        else input.placeholder=value;
+        input.value='';input.style.color='#92909d';input.oninput=()=>input.style.color=input.value?'':'#92909d';
+      });
+      card.querySelector('[data-remove]').onclick=()=>card.remove();$('#optimization-variants').append(card);
+    };
+    // The shared field renderer needs the source model's task and modality.
+    ms.task=selected.custom_target?.task||ms.task;ms.entry=selected.entry;
+    bind('#add-variant',add);add();
+    bind('#optimize-parameters',async event=>{event.preventDefault();const variants=$$('[data-variant]').map(card=>{const params={};card.querySelectorAll('[data-param]').forEach(input=>{if(!input.value.trim())return;const key=input.dataset.param;params[key]=typeof defaults[key]==='string'?input.value:JSON.parse(input.value);});return params;});if(!variants.length)throw Error('Add at least one model.');await start({mode:'parameters',variants});},'submit');
+  }
+  if(!runs.length){$('#optimization-leaderboard').innerHTML='<p>No optimization runs yet.</p>';return;}
+  const selectedIndex=runs.findIndex(r=>r.id===ms.optimizationId);$('#optimization-run').value=String(selectedIndex>=0?selectedIndex:runs.length-1);
+  function current(){return runs[Number($('#optimization-run').value)];}
+  function metricOptions(resetSource=false){
+    const run=current();if(!run)return;
+    if(resetSource){$('#optimization-source').value=['test_metrics','validation_metrics','training_metrics'].find(k=>run.trials.some(t=>Object.keys(t[k]||{}).length))||'test_metrics';}
+    const source=$('#optimization-source').value;
+    const keys=[...new Set(run.trials.flatMap(t=>Object.entries(t[source]||{}).filter(([,v])=>typeof v==='number'&&Number.isFinite(v)).map(([k])=>k)))];
+    $('#optimization-metric').innerHTML=keys.map(k=>'<option value="'+esc(k)+'">'+esc(pretty(k))+'</option>').join('');
+    $('#optimization-metric').value=keys.includes('accuracy')?'accuracy':keys.includes('rmse')?'rmse':keys[0]||'';draw();
+  }
+  function draw(){
+    const run=current(),source=$('#optimization-source').value,metric=$('#optimization-metric').value;
+    const lower=/loss|error|rmse|mse|mae|mape|brier/.test(metric);
+    const score=t=>typeof t[source]?.[metric]==='number'&&Number.isFinite(t[source][metric])?t[source][metric]:null;
+    const rows=[...run.trials].sort((a,b)=>score(a)===null?1:score(b)===null?-1:(lower?1:-1)*(score(a)-score(b)));
+    const values=rows.map(score).filter(v=>v!==null),mean=values.length?values.reduce((a,b)=>a+b,0)/values.length:null;
+    const sd=values.length>1?Math.sqrt(values.reduce((a,b)=>a+(b-mean)**2,0)/(values.length-1)):null;
+    $('#optimization-leaderboard').innerHTML='<p>'+esc(pretty(run.mode))+' · '+esc(run.status)+' · '+esc(run.split_config.strategy)+' splits. '+(source==='training_metrics'?'Training scores are in-sample.':'')+'</p>'+metricCards({mean_score:mean,score_standard_deviation:sd,scored_trials:values.length})+'<div class="table-wrap"><table><thead><tr><th>Rank</th><th>Model</th><th>Status</th><th>'+esc(pretty(metric||'score'))+'</th><th>Split seed</th><th>Training seconds</th><th>Total seconds</th><th>Hyperparameters</th><th>Split / notes</th></tr></thead><tbody>'+rows.map((t,i)=>'<tr><td>'+(score(t)===null?'—':i+1)+'</td><td>'+(t.name?'<button data-inspect-trial="'+esc(t.name)+'">'+esc(t.name)+'</button>':'Pending')+'</td><td>'+esc(t.status)+'</td><td>'+esc(scalar(score(t)))+'</td><td>'+esc(t.seed)+'</td><td>'+esc(scalar(t.fit_seconds))+'</td><td>'+esc(scalar(t.elapsed_seconds))+'</td><td><pre>'+esc(JSON.stringify(t.params,null,2))+'</pre></td><td>'+esc(t.reference?.run_id||'')+'<p>'+esc(t.error||t.evaluation_note||'')+'</p></td></tr>').join('')+'</tbody></table></div>';
+    $$('[data-inspect-trial]').forEach(b=>b.onclick=guarded(()=>selectModel(b.dataset.inspectTrial)));
+  }
+  bind('#optimization-run',()=>metricOptions(true),'change');bind('#optimization-source',()=>metricOptions(false),'change');bind('#optimization-metric',draw,'change');metricOptions(true);
+}
+
+async function loadPredictionLibrary(){
+  const library=await api(endpoint()+'/prediction-library');
+  if(!$('#saved-prediction-file'))return;
+  $('#saved-prediction-file').innerHTML='<option value="">Add file…</option>'+library.files.map(f=>'<option value="'+esc(f.id)+'">'+esc(f.name)+'</option>').join('');
+}
+async function exportExtras(result){
+  const library=await api(endpoint()+'/prediction-library');
+  $('#csv-result').insertAdjacentHTML('beforeend','<div class="prediction-box stack"><h3>Saved export formats</h3><select id="export-preset"><option value="">Choose a format…</option>'+Object.keys(library.presets).map(n=>'<option>'+esc(n)+'</option>').join('')+'</select><label>Format name<input id="preset-name"></label><button type="button" id="save-preset">Save selected columns and rows</button></div><div id="kaggle-box"></div>');
+  bind('#export-preset',()=>{const preset=library.presets[$('#export-preset').value];if(!preset)return;$$('[data-export-column]').forEach(c=>c.checked=preset.columns.includes(c.dataset.exportColumn));$('#csv-include').value=preset.include_rows;$('#csv-exclude').value=preset.exclude_rows;$('#preset-name').value=$('#export-preset').value;},'change');
+  bind('#save-preset',async()=>{const presets=await job(endpoint()+'/prediction-presets',{name:$('#preset-name').value,columns:$$('[data-export-column]').filter(c=>c.checked).map(c=>c.dataset.exportColumn),include_rows:$('#csv-include').value,exclude_rows:$('#csv-exclude').value});library.presets=presets;$('#export-preset').innerHTML='<option value="">Choose a format…</option>'+Object.keys(presets).map(n=>'<option>'+esc(n)+'</option>').join('');notify('Export format saved.');});
+  await kaggleBox(result);
+}
+async function kaggleBox(result){
+  const library=await api(endpoint()+'/prediction-library');
+  $('#kaggle-box').innerHTML='<div class="prediction-box stack"><h3>Kaggle submission</h3><p>Submit '+esc(result.name)+' ('+result.rows+' rows). This uploads this generated CSV to Kaggle using your configured CLI account.</p><label>Competition name<input id="kaggle-competition" value="'+esc(library.competition.name||'')+'" placeholder="titanic"></label><label>Message<input id="kaggle-message" value="'+esc(library.competition.message||'')+'"></label><button type="button" id="submit-kaggle">Submit this CSV to Kaggle</button><div id="kaggle-status"></div></div>';
+  bind('#submit-kaggle',async()=>{const submission=await job(endpoint()+'/prediction-exports/'+encodeURIComponent(result.id)+'/kaggle',{competition:$('#kaggle-competition').value,message:$('#kaggle-message').value});await showSubmissions();notify('Submission '+submission.status);});
+  async function showSubmissions(){const saved=await api(endpoint()+'/prediction-library');$('#kaggle-status').innerHTML=saved.submissions.map(s=>'<p>'+esc(s.model)+' · '+esc(s.competition)+' · '+esc(s.status)+' · Public score: '+esc(scalar(s.public_score))+' <button type="button" data-refresh-submission="'+esc(s.id)+'">Refresh score</button></p>').join('');$$('[data-refresh-submission]').forEach(b=>b.onclick=guarded(async()=>{await job(endpoint()+'/kaggle/'+encodeURIComponent(b.dataset.refreshSubmission)+'/refresh',{});await showSubmissions();}));}
+  await showSubmissions();
 }

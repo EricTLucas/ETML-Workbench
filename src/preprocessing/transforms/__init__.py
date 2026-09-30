@@ -1,3 +1,4 @@
+from .replace import FindReplace
 from .base import Transform
 from .missing import FillMissing, DropMissing
 from .types import ConvertType
@@ -5,6 +6,7 @@ from .categories import NormalizeCategories, MapCategories
 from .columns import SelectColumns, DropColumns, RenameColumns
 
 TRANSFORMS = {
+    'find_replace': FindReplace,
     'fill_missing': FillMissing,
     'drop_missing': DropMissing,
     'convert_type': ConvertType,

@@ -82,12 +82,16 @@ def create_app(projects_dir='projects', *, max_bytes=512*1024**2):
     def job(job_id: str):
         return service.job(job_id)
 
+    @app.post('/api/jobs/{job_id}/cancel')
+    def cancel_job(job_id: str, payload: dict):
+        return service.cancel(job_id,payload.get('mode','cancel'))
+
     @app.post('/api/projects/{name}/import')
     def import_data(name: str, payload: dict):
         return service.submit(name, 'Importing data and building your overview', lambda: service.import_data(name, payload))
 
     @app.post('/api/projects/{name}/upload')
-    async def upload(name: str, file: UploadFile = File(...), analyze: bool = Form(True)):
+    async def upload(name: str, file: UploadFile = File(...), analyze: bool = Form(True), explanation: str = Form(''), ai_analysis: bool = Form(False), ai_samples: bool = Form(False)):
         service.store.get(name)
         suffix = Path(file.filename or '').suffix.lower()
         if suffix not in {'.csv', '.tsv', '.parquet', '.json', '.jsonl', '.ndjson'}:
@@ -105,7 +109,7 @@ def create_app(projects_dir='projects', *, max_bytes=512*1024**2):
                     output.write(block)
             def run():
                 try:
-                    return service.import_data(name, {'source': 'path', 'path': str(path), 'analyze': analyze})
+                    return service.import_data(name, {'source': 'path', 'path': str(path), 'analyze': analyze,'explanation':explanation,'ai_analysis':ai_analysis,'ai_samples':ai_samples})
                 finally:
                     temp.cleanup()
             return service.submit(name, 'Importing data and building your overview', run)
@@ -118,6 +122,16 @@ def create_app(projects_dir='projects', *, max_bytes=512*1024**2):
     @app.post('/api/projects/{name}/analyze')
     def analyze(name: str, payload: dict):
         return service.submit(name, 'Generating the data overview', lambda: service.analyze(name, payload['dataset_id']))
+
+    @app.post('/api/projects/{name}/intelligence')
+    def intelligence(name: str, payload: dict):
+        def run():
+            from data.intelligence import configure, load, save
+            prep=service.preparation(name,payload['dataset_id'])
+            configure(prep.dataset,payload.get('explanation',''),payload.get('ai_analysis') is True,payload.get('ai_samples') is True)
+            value=load(prep.dataset);value.pop('analysis',None);value.pop('error',None);save(prep.dataset,value)
+            return service.analyze(name,payload['dataset_id'])
+        return service.submit(name,'Updating dataset context and EDA',run)
 
     @app.post('/api/projects/{name}/suggest')
     def suggest(name: str, payload: dict):
@@ -152,7 +166,21 @@ def create_app(projects_dir='projects', *, max_bytes=512*1024**2):
 
     @app.post('/api/projects/{name}/models/train')
     def train_model(name: str, payload: dict):
-        return service.submit(name, 'Training model', lambda progress: models.train(name, payload, progress), with_progress=True)
+        key=payload.get('key')
+        if not key and payload.get('name'):
+            from workflows.model_lifecycle import saved_record
+            key=saved_record(service.store.get(name),payload['name'])['model']
+        return service.submit(name, 'Training model', lambda progress: models.train(name, payload, progress), with_progress=True,early_stop=key in {'pytorch:mlp','tensorflow:mlp'})
+
+    @app.get('/api/projects/{name}/optimizations')
+    def optimization_list(name: str):
+        from .optimization import experiments
+        return experiments(service.store.get(name))
+
+    @app.post('/api/projects/{name}/models/{model}/optimize')
+    def optimize_model(name: str, model: str, payload: dict):
+        from .optimization import run_experiment
+        return service.submit(name,'Optimizing models',lambda progress:run_experiment(models,name,model,payload,progress),with_progress=True)
 
     @app.post('/api/projects/{name}/models/{model}/predict')
     def predict_model(name: str, model: str, payload: dict):
@@ -174,13 +202,41 @@ def create_app(projects_dir='projects', *, max_bytes=512*1024**2):
                     if size>max_bytes: raise HTTPException(413,'Upload exceeds the configured size limit.')
                     output.write(block)
             def run():
-                try: return models.predict_csv(name,model,source)
+                try:
+                    from .competition import remember
+                    remember(service.store.get(name),source,file.filename or 'input.csv')
+                    return models.predict_csv(name,model,source)
                 finally: temp.cleanup()
             return service.submit(name,'Predicting CSV rows',run)
         except Exception:
             temp.cleanup(); raise
         finally:
             await file.close()
+
+    @app.get('/api/projects/{name}/prediction-library')
+    def prediction_library(name: str):
+        from .competition import state
+        return state(service.store.get(name))
+
+    @app.post('/api/projects/{name}/prediction-presets')
+    def prediction_preset(name: str, payload: dict):
+        from .competition import preset
+        return service.submit(name,'Saving export preset',lambda:preset(service.store.get(name),payload))
+
+    @app.post('/api/projects/{name}/models/{model}/predict-saved')
+    def predict_saved(name: str, model: str, payload: dict):
+        from .competition import saved_file
+        return service.submit(name,'Predicting saved CSV',lambda:models.predict_csv(name,model,saved_file(service.store.get(name),payload['id'])))
+
+    @app.post('/api/projects/{name}/prediction-exports/{export_id}/kaggle')
+    def kaggle_submit(name: str, export_id: str, payload: dict):
+        from .competition import submit
+        return service.submit(name,'Submitting CSV to Kaggle',lambda:submit(service.store.get(name),export_id,payload))
+
+    @app.post('/api/projects/{name}/kaggle/{submission_id}/refresh')
+    def kaggle_refresh(name: str, submission_id: str):
+        from .competition import refresh
+        return service.submit(name,'Checking Kaggle score',lambda:refresh(service.store.get(name),submission_id))
 
     @app.post('/api/projects/{name}/prediction-exports/{export_id}/filter')
     def filter_predictions(name: str, export_id: str, payload: dict):

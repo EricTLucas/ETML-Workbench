@@ -30,6 +30,40 @@ class ModelWebTests(unittest.TestCase):
         self.wait(queued)
         return self.get('projects/demo/models/'+name),self.get('jobs/'+queued['job_id'])
 
+    def test_saved_prediction_presets_and_kaggle(self):
+        import pandas as pd
+        from etml.web import competition
+        did=self.split();model,_=self.train(did)
+        row=self.wait(self.post('projects/demo/models/model1/predict',{'mode':'row','split':'test','row':1}))
+        frame=pd.DataFrame([row['values']]*3)
+        response=self.client.post('/api/projects/demo/models/model1/predict-csv',headers=self.headers,
+            files={'file':('remember.csv',frame.to_csv(index=False).encode(),'text/csv')})
+        result=self.wait(response.json())
+        library=self.get('projects/demo/prediction-library')
+        self.assertEqual(library['files'][0]['name'],'remember.csv')
+        reused=self.wait(self.post('projects/demo/models/model1/predict-saved',{'id':library['files'][0]['id']}))
+        self.assertEqual(reused['rows'],3)
+        target=model['custom_target']['name']
+        payload={'name':'competition','columns':[target],'include_rows':'1-2','exclude_rows':''}
+        self.wait(self.post('projects/demo/prediction-presets',payload))
+        self.assertEqual(self.get('projects/demo/prediction-library')['presets']['competition']['columns'],[target])
+        filtered=self.wait(self.post('projects/demo/prediction-exports/'+result['id']+'/filter',payload))
+        calls=[]
+        def kaggle(args):
+            calls.append(args)
+            if args[1]=='submit':return 'Submission ref: 123'
+            return 'ref,description,status,publicScore\n999,unrelated,complete,0.99\n123,ours,pending,\n'
+        with patch.object(competition,'cli',side_effect=kaggle):
+            submission=self.wait(self.post('projects/demo/prediction-exports/'+filtered['id']+'/kaggle',{'competition':'titanic','message':'trial'}))
+        self.assertIsNone(submission['public_score'])
+        self.assertIn('-c',calls[0])
+        with patch.object(competition,'cli',return_value='ref,description,status,publicScore\n999,unrelated,complete,0.99\n123,ours,complete,0.81\n'):
+            refreshed=self.wait(self.post('projects/demo/kaggle/'+submission['id']+'/refresh',{}))
+        self.assertEqual(refreshed['public_score'],.81)
+        all_models=self.get('projects/demo/models/compare')['all_models']
+        self.assertEqual(all_models[0]['competition_scores']['titanic']['score'],.81)
+        self.assertEqual(self.get('projects/demo/prediction-library')['competition']['name'],'titanic')
+
     def test_csv_predictions_download_and_compare(self):
         import pandas as pd
         did=self.split()
@@ -130,6 +164,67 @@ class ModelWebTests(unittest.TestCase):
         self.assertEqual(result['plotted_rows'],150)
         self.assertEqual(result['split'],'all')
         self.assertIn('All data',result['title'])
+
+    def test_optimization_seed_and_parameter_trials(self):
+        did=self.split();original,_=self.train(did)
+        original_state=self.get('projects/demo')['dataset']['state']
+        seeds=self.wait(self.post('projects/demo/models/model1/optimize',{'mode':'seeds','count':2,'start_seed':71}))
+        parameter=self.wait(self.post('projects/demo/models/model1/optimize',{'mode':'parameters','variants':[{'C':.1},{'C':2}]}))
+        runs=self.get('projects/demo/optimizations')
+        seed_run=next(r for r in runs if r['id']==seeds['experiment_id'])
+        parameter_run=next(r for r in runs if r['id']==parameter['experiment_id'])
+        self.assertEqual([t['seed'] for t in seed_run['trials']],[71,72])
+        self.assertEqual(len({t['reference']['run_id'] for t in seed_run['trials']}),2)
+        for trial in seed_run['trials']+parameter_run['trials']:
+            self.assertEqual(trial['status'],'complete',trial)
+            self.assertIn('accuracy',trial['test_metrics'])
+            self.assertGreaterEqual(trial['fit_seconds'],0)
+            self.assertEqual(trial['reference'].get('config',seed_run['split_config'])['strategy'],'stratified')
+        self.assertTrue(all(t['reference']['run_id']==original['record']['input']['run_id'] for t in parameter_run['trials']))
+        self.assertEqual([t['params']['C'] for t in parameter_run['trials']],[.1,2])
+        self.assertEqual(self.get('projects/demo')['dataset']['state']['split'],original_state['split'])
+        self.assertEqual(self.get('projects/demo/models/model1')['record']['bundle'],original['record']['bundle'])
+        self.assertEqual(len(self.get('projects/demo/models')['models']),5)
+
+    def test_optimization_failed_trial_does_not_stop_later_trials(self):
+        did=self.split();self.train(did)
+        result=self.wait(self.post('projects/demo/models/model1/optimize',{'mode':'parameters','variants':[{'not_a_parameter':1},{}]}))
+        run=next(r for r in self.get('projects/demo/optimizations') if r['id']==result['experiment_id'])
+        self.assertEqual([t['status'] for t in run['trials']],['failed','complete'])
+        self.wait(self.post('projects/demo/models/model1/optimize',{'mode':'seeds','count':51}),False)
+
+    @unittest.skipUnless(importlib.util.find_spec('torch'),'pytorch extra')
+    def test_cancel_and_end_epoch_preserve_training_state(self):
+        import threading,time
+        from models.adapters.neural import NeuralAdapter
+        did=self.split()
+        original_metrics=NeuralAdapter._metrics
+        for mode in ('cancel','stop'):
+            entered=threading.Event();release=threading.Event()
+            def gated(instance,*args,**kwargs):
+                if not entered.is_set():
+                    entered.set();release.wait(20)
+                return original_metrics(instance,*args,**kwargs)
+            with patch.object(NeuralAdapter,'_metrics',gated):
+                queued=self.post('projects/demo/models/train',{'dataset_id':did,'name':mode,'key':'pytorch:mlp','task':'classification',
+                    'params':{'epochs':8,'hidden_sizes':[4],'batch_size':128,'patience':None}})
+                try:
+                    self.assertTrue(entered.wait(20))
+                    self.post('jobs/'+queued['job_id']+'/cancel',{'mode':mode})
+                finally:release.set()
+                deadline=time.monotonic()+30
+                while time.monotonic()<deadline:
+                    current=self.get('jobs/'+queued['job_id'])
+                    if current['status'] in {'done','failed','cancelled'}:break
+                    time.sleep(.03)
+                self.assertEqual(current['status'],'cancelled' if mode=='cancel' else 'done',current)
+            model=self.get('projects/demo/models/'+mode)
+            self.assertTrue(model['can_resume'])
+            if mode=='stop':
+                self.assertEqual(model['record']['status'],'complete')
+                self.assertEqual(model['record']['metrics']['training']['epoch'],1)
+                self.assertTrue(model['record']['metrics']['training']['stopped_by_user'])
+            else:self.assertEqual(model['record']['status'],'cancelled')
 
     def test_catalog_and_default_name(self):
         overview=self.get('projects/demo/models')

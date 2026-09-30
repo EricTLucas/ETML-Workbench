@@ -67,7 +67,22 @@ class ProjectPreparation:
         proposal = PreprocessingWorkflow(self.workspace).prepare(self.dataset.dataset_id,
             protected_columns=[task.target,*task.excluded_columns],
             profile_config=ProfileConfig(batch_size=self.batch_size))
-        return proposal.recipe
+        from data.intelligence import load
+        from preprocessing.recipe import Step
+        from dataclasses import replace
+        dependencies=load(self.dataset).get('analysis',{}).get('dependencies',[])
+        steps=[]
+        for step in proposal.recipe.steps:
+            related=[d for d in dependencies if set(d['columns']).intersection(step.columns)]
+            steps.append(replace(step,evidence={**step.evidence,'dependency_review':related}) if related else step)
+        protected={task.target,*task.excluded_columns}
+        suggested=set()
+        for dependency in dependencies:
+            for column in dependency['drop_candidates']:
+                if column in protected or column in suggested:continue
+                steps.append(Step('drop_columns',(column,),reason='AI dependency hypothesis: '+dependency['reason']+' Review before enabling.',evidence={'dependency':dependency},enabled=False))
+                suggested.add(column)
+        return Recipe(tuple(steps),name=proposal.recipe.name)
 
     def save_recipe(self, recipe):
         task = self.task()
@@ -178,8 +193,10 @@ class ProjectPreparation:
         state['processed'] = {'version':version,'rows':info['rows'],'path':'processed/'+version,
                               'purpose':'exploration_only'}
         state.pop('split',None)
-        state['history'].append({'processed':state['processed'],'recipe':state['recipe']})
+        state['history'].append({'processed':state['processed'],'recipe':state['recipe'],'task':state['task']})
         self._save(state)
+        from data.intelligence import refresh_reports
+        refresh_reports(self.dataset)
         return state['processed']
 
     def split(self, config, *, validation_fraction=.2):
@@ -194,7 +211,7 @@ class ProjectPreparation:
             'path':result.directory.relative_to(self.dataset.directory).as_posix(),
             'split_counts':result.split_counts,'prepared_counts':result.prepared_counts,
             'config':config.to_dict(),'validation_fraction':validation_fraction}
-        state['history'].append({'split':state['split'],'recipe':state['recipe']})
+        state['history'].append({'split':state['split'],'recipe':state['recipe'],'task':state['task']})
         self._save(state)
         return result
 

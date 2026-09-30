@@ -51,6 +51,8 @@ def export_analysis(models, project_name, payload):
                    title=project_name+' — Analysis summary')
     try:html=result.html
     finally:result.close()
+    from data.intelligence import decorate
+    html=decorate(html,prep.dataset)
     content='<section><h2>Model leaderboard</h2><p>Results for one dataset and split. Test metrics are preferred; training metrics are used only when test data is absent. Choosing models repeatedly using test results compromises an independent test estimate.</p>'
     if group:
         metric='accuracy' if any('accuracy' in m['metrics'] for m in group['models']) else 'rmse'

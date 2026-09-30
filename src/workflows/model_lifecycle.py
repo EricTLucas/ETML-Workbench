@@ -79,8 +79,9 @@ def train_saved(project,name,*,additional_epochs=None,features=None,max_rows=200
         return store.update(name,status='complete',bundle=bundle.relative_to(project.directory).as_posix(),
             history=history,error=None,test_evaluation=None,**changes)
     except BaseException as exc:
+        from training.control import TrainingCancelled
         # A failed continuation leaves the last successful model usable.
-        changes={'status':original['status'] if original.get('bundle') else 'interrupted' if isinstance(exc,KeyboardInterrupt) else 'failed',
+        changes={'status':original['status'] if original.get('bundle') else 'cancelled' if isinstance(exc,TrainingCancelled) else 'interrupted' if isinstance(exc,KeyboardInterrupt) else 'failed',
                  'error':str(exc)}
         if latest: changes['latest_checkpoint']=latest
         store.update(name,**changes)

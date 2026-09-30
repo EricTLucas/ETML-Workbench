@@ -36,7 +36,7 @@ async function waitJob(id){
     const current=await api('jobs/'+id);
     if(state.section==='models')updateModelProgress(current);
     if(current.status==='done'){$('#notice').hidden=true;if(current.result?.warning)notify(current.result.warning,true);return current.result;}
-    if(current.status==='failed')throw Error(current.error);
+    if(current.status==='failed'||current.status==='cancelled')throw Error(current.error);
     notify(current.label+'…',false,true);await new Promise(r=>setTimeout(r,650));
   }
 }
@@ -50,7 +50,7 @@ async function openProject(name, id=null){
     state.busy=true;setBusy(true);
     try{
       const active=await api('jobs/'+state.project.busy);
-      if(active.label==='Training model'){
+      if(active.label==='Training model'||active.label==='Optimizing models'){
         ms.overview=await api(endpoint()+'/models');ms.started=Date.now()-(active.elapsed_seconds||0)*1000;
         state.section='models';renderProject();setBusy(true);
       }
@@ -58,7 +58,7 @@ async function openProject(name, id=null){
       await refresh();state.recipe=dataset()?.recipe||null;
       if(state.section==='models'&&result.name){
         ms.overview=await api(endpoint()+'/models');
-        ms.selected=await api(endpoint()+'/models/'+encodeURIComponent(result.name));ms.tab='results';
+        ms.selected=await api(endpoint()+'/models/'+encodeURIComponent(result.name));ms.tab=result.experiment_id?'optimize':'results';ms.optimizationId=result.experiment_id;
       }
     }finally{state.busy=false;ms.started=null;renderProject();}
   }
@@ -94,6 +94,8 @@ function reportURL(){return '/reports/'+encodeURIComponent(state.project.name)+'
 function renderPreview(){
   const d=dataset();
   $('#tab-content').innerHTML='<section class="section"><div class="section-head"><div><h2>Data overview</h2><p>Your automatically generated exploratory report</p></div>'+(d.report?'<a href="'+reportURL()+'" target="_blank" rel="noopener">Open report ↗</a>':'<button id="generate-report" class="small">Generate EDA</button>')+'</div>'+(d.report?'<div class="report-wrap"><iframe title="Embedded exploratory data report" src="'+reportURL()+'" sandbox="allow-scripts allow-same-origin" loading="lazy"></iframe><a class="report-link" href="'+reportURL()+'" target="_blank" rel="noopener" aria-label="Open full EDA report in a new tab"><span>Explore the full report ↗</span></a></div>':'<div class="section-body"><p>No report yet. Generate an overview to see distributions, relationships and missing values.</p></div>')+'</section><section class="section"><div class="section-head"><div><h2>Raw data</h2><p>First 10 rows'+(Object.keys(d.presplit).length?' of the uploaded training partition':'')+' · Original values, before preprocessing</p></div><span class="badge">Read only</span></div>'+tableHTML(d.preview)+'</section><div class="actions"><button id="start-prep" class="primary">Continue to preprocessing →</button></div>'+artifactsHTML();
+  $('#tab-content').insertAdjacentHTML('afterbegin','<details class="section"><summary class="section-head">Dataset explanation & AI analysis</summary><form id="dataset-context" class="section-body stack">'+contextFields(d.intelligence||{})+'<button class="primary">Save context & rebuild EDA</button></form></details>');
+  bind('#dataset-context',async e=>{e.preventDefault();const f=new FormData(e.target);await job(endpoint()+'/intelligence',payload({explanation:f.get('explanation'),ai_analysis:f.get('ai_analysis')==='on',ai_samples:f.get('ai_samples')==='on'}));await refresh();renderProject();},'submit');
   bind('#start-prep',()=>{state.tab='preprocess';renderProject();});
   bind('#generate-report',async()=>{await job(endpoint()+'/analyze',payload());await refresh();renderProject();});
 }
@@ -105,6 +107,7 @@ function renderPreparation(){
   const d=dataset(),saved=d.state, task=saved.task;
   const selectedTarget=task?.target||d.provenance?.target||'';
   $('#tab-content').innerHTML='<div class="progress-steps"><span class="'+(task?'done':'current')+'">01 Choose a target</span><i>→</i><span class="'+(saved.processed?'done':task?'current':'')+'">02 Review & prepare</span><i>→</i><span class="'+(saved.split?'done':saved.processed?'current':'')+'">03 Split for training</span></div><section class="section">'+stepHead('1','What do you want to predict?','Choose the target and the kind of problem you are solving.')+'<form class="section-body stack" id="target-form"><div class="grid"><label>Target column<select name="target" required><option value="">Choose a column</option>'+Object.keys(d.columns).map(c=>'<option '+(c===selectedTarget?'selected':'')+'>'+esc(c)+'</option>').join('')+'</select></label><label>Task<select name="task_type"><option value="classification">Classification — predict a category</option><option value="regression">Regression — predict a number</option></select></label></div><details><summary class="muted">More options</summary><div class="grid" style="margin-top:14px"><label>Exclude feature columns<select name="excluded" multiple size="4">'+Object.keys(d.columns).map(c=>'<option '+(task?.excluded_columns?.includes(c)?'selected':'')+'>'+esc(c)+'</option>').join('')+'</select></label><label>Missing target values<select name="missing_target"><option value="error">Stop and ask me to fix them</option><option value="drop">Drop rows with missing targets</option></select></label></div></details><div class="row between"><small>Recommendations will leave your target unchanged.</small><button class="primary">'+(task?'Update target & recommendations':'Get recommendations →')+'</button></div>'+(saved.processed?'<small>Updating the target starts a new preparation. Earlier files stay in the project.</small>':'')+'</form></section><div id="recipe-section"></div><div id="change-preview"></div><div id="split-section"></div>'+artifactsHTML();
+  $('#target-form').insertAdjacentHTML('afterbegin',dependencyHTML(d));
   $('#target-form [name=task_type]').value=task?.task_type||d.provenance?.task_type||'classification';
   $('#target-form [name=missing_target]').value=task?.missing_target||'error';
   bind('#target-form',async e=>{e.preventDefault();const f=new FormData(e.target);const result=await job(endpoint()+'/suggest',payload({target:f.get('target'),task_type:f.get('task_type'),excluded:f.getAll('excluded'),missing_target:f.get('missing_target')}));state.recipe=result.recipe;state.preview=null;state.dirty=false;await refresh();renderPreparation();$('#recipe-section').scrollIntoView({behavior:'smooth',block:'start'});},'submit');
@@ -118,7 +121,8 @@ function readRecipes(){
     const step=state.recipe.steps[i];
     step.enabled=$('[name=enabled]',card).checked;
     step.columns=[...$('[name=columns]',card).selectedOptions].map(o=>o.value);
-    step.params=JSON.parse($('[name=params]',card).value);
+    if(step.operation==='find_replace'){const parse=v=>{try{return JSON.parse(v);}catch{return v;}};step.params={find:parse($('[name=find]',card).value),replace:parse($('[name=replace]',card).value),mode:$('[name=replace-mode]',card).value};}
+    else step.params=JSON.parse($('[name=params]',card).value);
     if(!step.params||Array.isArray(step.params)||typeof step.params!=='object')throw Error('Recipe parameters must be a JSON object.');
     step.status='proposed';step.approval_fingerprint=null;
   });
@@ -131,10 +135,11 @@ function renderRecipes(){
   if(!state.recipe)state.recipe={format_version:1,name:'Project preparation',steps:[]};
   const columns=Object.keys(dataset().columns).filter(c=>c!==dataset().state.task.target&&!dataset().state.task.excluded_columns.includes(c));
   $('#recipe-section').innerHTML='<section class="section">'+stepHead('2','Review your recipe','Keep, adjust or disable recommendations. Add your own steps when needed.')+'<div class="section-body"><div id="recipe-list">'+(state.recipe.steps.length?state.recipe.steps.map((s,i)=>'<article class="recipe"><div class="row between"><label class="check"><input name="enabled" type="checkbox" '+(s.enabled?'checked':'')+'><strong>'+esc(s.operation.replaceAll('_',' '))+'</strong></label><button class="small quiet remove-step" data-index="'+i+'" aria-label="Remove step '+(i+1)+'">Remove</button></div><p>'+esc(s.reason||'Custom preprocessing step')+'</p><div class="recipe-fields"><label>Columns<select name="columns" multiple size="'+Math.min(3,Math.max(1,columns.length))+'">'+columns.map(c=>'<option '+(s.columns.includes(c)?'selected':'')+'>'+esc(c)+'</option>').join('')+'</select></label><label>Parameters (JSON)<textarea name="params" rows="3" spellcheck="false">'+esc(JSON.stringify(s.params,null,2))+'</textarea></label></div>'+(s.operation==='fill_missing'?'<div class="row" style="margin-top:12px"><small>Quick strategy:</small>'+['mean','median','mode'].map(v=>'<button class="small strategy" data-index="'+i+'" data-value="'+v+'">'+v+'</button>').join('')+'</div>':'')+'<details><summary>Why this step?</summary><small>'+esc(JSON.stringify(s.evidence||{}))+'</small></details></article>').join(''):'<div class="callout">No automatic changes are needed. You can add a custom step or preview the unchanged features.</div>')+'</div><div class="row"><select id="custom-operation" aria-label="Custom recipe operation" style="max-width:240px">'+Object.keys(state.boot.transforms).map(v=>'<option value="'+v+'">'+v.replaceAll('_',' ')+'</option>').join('')+'</select><button id="add-step" class="quiet">+ Add custom step</button></div><p class="table-caption" style="padding-left:0">Previewing approves the enabled steps shown above. Only feature columns are transformed.</p><div class="actions"><button id="preview-recipe" class="primary">Approve & preview changes →</button></div></div></section>';
+  $$('.recipe').forEach((card,i)=>{const step=state.recipe.steps[i];if(step.operation==='find_replace'){$('[name=params]',card).closest('label').outerHTML='<div class="stack"><label>Find<input name="find" value="'+esc(JSON.stringify(step.params.find??''))+'"></label><label>Replace with<input name="replace" value="'+esc(JSON.stringify(step.params.replace??''))+'"></label><label>Match<select name="replace-mode"><option value="exact">Entire value</option><option value="substring">Text substring</option></select></label><small>Numbers are numeric; quote text to preserve numeric-looking strings. Use null to create a missing value. Substring matching is literal.</small></div>';$('[name=replace-mode]',card).value=step.params.mode||'exact';}if(step.operation==='drop_columns')$('[name=params]',card).closest('label').hidden=true;});
   $$('.recipe input,.recipe select,.recipe textarea').forEach(el=>el.addEventListener('input',invalidatePreview));
   $$('.remove-step').forEach(el=>el.onclick=guarded(()=>{readRecipes();state.recipe.steps.splice(Number(el.dataset.index),1);invalidatePreview();renderRecipes();}));
   $$('.strategy').forEach(el=>el.onclick=guarded(()=>{readRecipes();state.recipe.steps[Number(el.dataset.index)].params={strategy:el.dataset.value};invalidatePreview();renderRecipes();}));
-  bind('#add-step',()=>{readRecipes();const op=$('#custom-operation').value;const defaults={fill_missing:{strategy:'median'},drop_missing:{},convert_type:{dtype:'Float64'},normalize_categories:{},map_categories:{mapping:[]},select_columns:{},drop_columns:{},rename_columns:{names:[]}};state.recipe.steps.push({operation:op,columns:[],params:defaults[op],reason:'Custom step',evidence:{},enabled:true,status:'proposed'});invalidatePreview();renderRecipes();});
+  bind('#add-step',()=>{readRecipes();const op=$('#custom-operation').value;const defaults={fill_missing:{strategy:'median'},drop_missing:{},convert_type:{dtype:'Float64'},normalize_categories:{},map_categories:{mapping:[]},select_columns:{},drop_columns:{},rename_columns:{names:[]},find_replace:{find:'',replace:'',mode:'exact'}};state.recipe.steps.push({operation:op,columns:[],params:defaults[op],reason:'Custom step',evidence:{},enabled:true,status:'proposed'});invalidatePreview();renderRecipes();});
   bind('#preview-recipe',async()=>{readRecipes();const result=await job(endpoint()+'/preview',payload({recipe:state.recipe}));state.preview=result;state.recipe=result.recipe;state.dirty=false;await refresh();renderPreparation();$('#change-preview').scrollIntoView({behavior:'smooth'});});
 }
 function renderChanges(){
@@ -181,7 +186,7 @@ function renderSplit(){
 function updateBar(){const values=$$('#ratios input').map(e=>Number(e.value));$$('.split-bar span').forEach((el,i)=>el.style.width=Math.max(0,Math.min(100,values[i]))+'%');}
 function showImport(){
   const dialog=$('#import-dialog');
-  dialog.innerHTML='<div class="section-head"><div><div class="eyebrow">Bring your data</div><h2 id="import-title">Add a dataset</h2></div><button id="close-import" class="quiet small" aria-label="Close import">×</button></div><nav class="tabs" aria-label="Import source"><button class="active" data-source-tab="upload">Upload</button><button data-source-tab="path">File path</button><button data-source-tab="library">Dataset library</button></nav><form id="import-form" class="section-body"><div id="import-fields"></div><label class="check" style="margin-top:22px"><input type="checkbox" name="analyze" checked>Automatically generate the EDA</label><div class="actions"><button class="primary">Add to project →</button></div></form>';
+  dialog.innerHTML='<div class="section-head"><div><div class="eyebrow">Bring your data</div><h2 id="import-title">Add a dataset</h2></div><button id="close-import" class="quiet small" aria-label="Close import">×</button></div><nav class="tabs" aria-label="Import source"><button class="active" data-source-tab="upload">Upload</button><button data-source-tab="path">File path</button><button data-source-tab="library">Dataset library</button></nav><form id="import-form" class="section-body"><div id="import-fields"></div>'+contextFields()+'<label class="check" style="margin-top:22px"><input type="checkbox" name="analyze" checked>Automatically generate the EDA</label><div class="actions"><button class="primary">Add to project →</button></div></form>';
   let sourceTab='upload', dropped=null;
   const draw=()=>{
     const field=$('#import-fields');dropped=null;
@@ -206,9 +211,9 @@ function showImport(){
     let result;
     if(sourceTab==='upload'){
       const file=dropped||$('#upload-file').files[0];if(!file)throw Error('Choose a dataset file first.');if(file.size>state.boot.max_upload_bytes)throw Error('This file exceeds the upload limit.');
-      const upload=new FormData();upload.set('file',file);upload.set('analyze',String(analyze));dialog.close();result=await job(endpoint()+'/upload',upload,true);
+      const upload=new FormData();upload.set('file',file);upload.set('analyze',String(analyze));upload.set('explanation',form.get('explanation')||'');upload.set('ai_analysis',String(form.get('ai_analysis')==='on'));upload.set('ai_samples',String(form.get('ai_samples')==='on'));dialog.close();result=await job(endpoint()+'/upload',upload,true);
     }else{
-      const body=Object.fromEntries(form);body.source=sourceTab==='path'?'path':body.source;body.analyze=analyze;dialog.close();result=await job(endpoint()+'/import',body);
+      const body=Object.fromEntries(form);body.source=sourceTab==='path'?'path':body.source;body.analyze=analyze;body.ai_analysis=form.get('ai_analysis')==='on';body.ai_samples=form.get('ai_samples')==='on';dialog.close();result=await job(endpoint()+'/import',body);
     }
     await openProject(state.project.name,result.dataset_id);
   },'submit');
@@ -217,3 +222,11 @@ function showImport(){
   try{[state.boot]=await Promise.all([api('bootstrap'),new Promise(r=>setTimeout(r,650))]);home();$('#app').hidden=false;$('#splash').hidden=true;}
   catch(error){$('#splash p').textContent='Unable to connect. Restart workbench ui and reload this page.';$('.spinner', $('#splash'))?.remove();notify(error.message,true);}
 })();
+
+function contextFields(value={}){
+  return '<label>Dataset explanation (optional)<textarea name="explanation" rows="4" maxlength="12000" placeholder="What does each row represent? Describe columns, units, collection timing and possible targets.">'+esc(value.explanation||'')+'</textarea></label><label class="check"><input type="checkbox" name="ai_analysis" '+(value.enabled?'checked':'')+'>Generate an AI summary with OpenAI</label><label class="check"><input type="checkbox" name="ai_samples" '+(value.samples?'checked':'')+'>Include up to 3 sample values per column</label><p class="model-note">When enabled, sends your explanation, column names and aggregate statistics to OpenAI. Samples are optional and limited to 80 characters per value; analysis supports up to 100 columns. Uses the server API key. Inferred meanings and dependencies need review.</p>'+(value.error?'<div class="callout">'+esc(value.error)+'</div>':'');
+}
+function dependencyHTML(d){
+  const ai=d.intelligence?.analysis;if(!ai)return '';
+  return '<div class="callout"><h3>Dataset context & dependency review</h3><p>Possible targets: '+esc(ai.possible_targets.join(', ')||'Not identified')+'</p><ul>'+ai.dependencies.map(dep=>'<li><strong>'+esc(dep.columns.join(', '))+'</strong>: '+esc(dep.reason)+' '+esc(dep.recommendation)+'</li>').join('')+'</ul><p>These are AI hypotheses. Related recipe steps include this evidence. Suggested removals start disabled. For repeated entities or time dependencies, review the group/chronological split options below.</p></div>';
+}
